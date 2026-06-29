@@ -3,7 +3,8 @@ import { useSearchParams } from 'react-router-dom'
 import { Phone, Mail, MapPin, Clock, CheckCircle, Send } from 'lucide-react'
 import FadeIn from '../components/ui/FadeIn'
 import { identifyChatwootVisitor, setChatwootConversationLabel } from '../components/ui/ChatwootWidget'
-import { addLead, addQuote } from '../data/adminData'
+import { addLead, addQuote, getPageFields } from '../data/adminData'
+import { useAdminTick } from '../hooks/useAdminTick'
 
 const STRUCTURE_TYPES = [
   'Metal Carport',
@@ -22,6 +23,8 @@ const CONTACT_ITEMS = [
 ]
 
 export default function ContactPage() {
+  useAdminTick()
+  const pg = getPageFields('contact')
   const [params] = useSearchParams()
   const config = params.get('config') || ''
   const price = params.get('price') ? Number(params.get('price')) : null
@@ -63,13 +66,12 @@ export default function ContactPage() {
       {/* Header */}
       <div className="container py-12">
         <div className="max-w-2xl">
-          <span className="section-label-light">Get in Touch</span>
+          <span className="section-label-light">{pg.eyebrow}</span>
           <h1 className="font-display text-5xl lg:text-6xl font-bold text-white leading-none mt-1 mb-4">
-            Ready to Build?<br />
-            <span className="text-brand">Let's Talk.</span>
+            {pg.title1}{pg.title2 && <><br /><span className="text-brand">{pg.title2}</span></>}
           </h1>
           <p className="text-base text-slate-400 leading-relaxed">
-            Tell us a bit about what you have in mind and we'll get back to you within one business day with a free, itemized quote. No pressure and no pushy sales calls.
+            {pg.intro}
           </p>
         </div>
       </div>

@@ -23,6 +23,7 @@ const K = {
   analytics: 'qmc_admin_analytics',
   blog: 'qmc_blog_overlay',
   reviews: 'qmc_reviews_overlay',
+  pages: 'qmc_pages_overlay',
 }
 
 const emit = () => window.dispatchEvent(new CustomEvent('qmc-admin-change'))
@@ -160,32 +161,72 @@ export function saveBlogPost(post) {
 export const deleteBlogPost = (slug) => write(K.blog, getSiteBlog().filter((p) => p.slug !== slug))
 export function resetBlog() { localStorage.removeItem(K.blog); emit() }
 
-// ── Pages (real site structure) ──────────────────────────────────────────────
-const CORE_PAGES = [
-  { name: 'Home', path: '/', type: 'Core' },
-  { name: 'Services', path: '/services', type: 'Core' },
-  { name: 'Metal Carports', path: '/services/metal-carports', type: 'Service' },
-  { name: 'Metal Garages', path: '/services/metal-garages', type: 'Service' },
-  { name: 'RV Covers', path: '/services/rv-covers', type: 'Service' },
-  { name: 'Agricultural Buildings', path: '/services/agricultural-buildings', type: 'Service' },
-  { name: 'Boat Storage', path: '/services/boat-storage', type: 'Service' },
-  { name: 'Locations', path: '/locations', type: 'Core' },
-  { name: 'About', path: '/about', type: 'Core' },
-  { name: 'Contact', path: '/contact', type: 'Core' },
-  { name: 'Blog', path: '/blog', type: 'Core' },
+// ── Pages: editable hero/header content + custom-page CRUD (overlay) ──────────
+// Editable core pages keep their default content here (matching the live
+// components); the public Hero/About/Contact/Services read getPageFields() so
+// edits show on the site. Custom (new/duplicated) pages render at /p/:slug.
+const PAGE_DEFAULTS = {
+  home: { eyebrow: 'CA LIC# 1096004 · Fresno & Northern California', title1: 'Built to Last.', title2: 'Steel Strong.', intro: "That truck, RV, or tractor sitting out in the Valley sun deserves better. We build custom steel carports, garages, and barns made for California weather, backed by warranties we put in writing and a local crew that sticks around long after the job is done.", cta: 'Get a Free Quote' },
+  about: { eyebrow: 'About Us', title1: 'Local. Accountable.', title2: 'Steel Strong.', intro: 'Quality Metal Carports Inc. has been building custom metal structures in California for over 15 years. We are not a national franchise. We are a local team that shows up, does the work, and backs it with a real warranty.' },
+  contact: { eyebrow: 'Get in Touch', title1: 'Ready to Build?', title2: "Let's Talk.", intro: "Tell us a bit about what you have in mind and we'll get back to you within one business day with a free, itemized quote. No pressure and no pushy sales calls." },
+  services: { eyebrow: 'What We Build', title1: 'Our Services', title2: '', intro: 'Every structure we build is custom, engineered to your site, your dimensions, and how you actually plan to use it. Take a look at everything we build below.' },
+}
+const CORE_PAGES_META = [
+  { id: 'home', name: 'Home', path: '/', editable: true },
+  { id: 'services', name: 'Services', path: '/services', editable: true },
+  { id: 'about', name: 'About', path: '/about', editable: true },
+  { id: 'contact', name: 'Contact', path: '/contact', editable: true },
+  { id: 'blog', name: 'Blog', path: '/blog', editable: false, note: 'Edit articles in the Blog tab' },
+  { id: 'locations', name: 'Locations', path: '/locations', editable: false, note: 'Auto-generated from your service areas' },
 ]
-export const getPages = () => ({
-  core: CORE_PAGES,
-  generated: [
-    { name: 'City / county location pages', count: CITIES.length, sample: `/locations/${CITIES[0]?.slug || ''}` },
-    { name: 'Blog articles', count: getSiteBlog().length, sample: `/blog/${getSiteBlog()[0]?.slug || ''}` },
-  ],
-})
+const readPages = () => read(K.pages, { core: {}, custom: [] })
+const writePages = (v) => write(K.pages, v)
+
+export const getPageFields = (id) => ({ ...PAGE_DEFAULTS[id], ...(readPages().core[id] || {}) })
+export function savePageFields(id, patch) { const p = readPages(); p.core[id] = { ...(p.core[id] || {}), ...patch }; writePages(p) }
+
+export const getCustomPages = () => readPages().custom
+export const getCustomPage = (slug) => readPages().custom.find((c) => c.slug === slug) || null
+export function saveCustomPage(page) {
+  const p = readPages(); const i = p.custom.findIndex((c) => c.slug === page.slug)
+  if (i >= 0) p.custom[i] = { ...p.custom[i], ...page }
+  else p.custom.unshift({ slug: page.slug || `page-${Date.now()}`, ...page })
+  writePages(p)
+}
+export const deleteCustomPage = (slug) => { const p = readPages(); p.custom = p.custom.filter((c) => c.slug !== slug); writePages(p) }
+
+export function duplicatePage(id) {
+  const core = CORE_PAGES_META.find((m) => m.id === id && m.editable)
+  let src
+  if (core) { const f = getPageFields(id); src = { name: `${core.name} (copy)`, eyebrow: f.eyebrow, title1: f.title1, title2: f.title2 || '', intro: f.intro || '', body: '<p>Duplicated from a template — edit me.</p>' } }
+  else { const c = getCustomPage(id); if (c) src = { ...c, name: `${c.name || 'Page'} (copy)` } }
+  if (!src) return null
+  const slug = `${slugify(src.name)}-${Math.random().toString(36).slice(2, 5)}`
+  saveCustomPage({ ...src, slug })
+  return slug
+}
+export function createPage() {
+  const slug = `page-${Math.random().toString(36).slice(2, 6)}`
+  saveCustomPage({ slug, name: 'New page', eyebrow: 'New', title1: 'New page', title2: '', intro: 'Edit this page in the admin — it shows on the site at this URL.', body: '<p>Your content here.</p>' })
+  return slug
+}
+
+// Admin list (core + custom); generated counts for the directory pages.
+export function getAllPages() {
+  const core = CORE_PAGES_META.map((m) => ({ ...m, type: 'Core', title: m.editable ? getPageFields(m.id).title1 : m.name }))
+  const custom = getCustomPages().map((c) => ({ id: c.slug, name: c.name || c.title1 || 'Untitled', path: `/p/${c.slug}`, type: 'Custom', editable: true, custom: true, title: c.title1 }))
+  return [...core, ...custom]
+}
+export const getGeneratedPages = () => [
+  { name: 'City / county location pages', count: CITIES.length, sample: `/locations/${CITIES[0]?.slug || ''}` },
+  { name: 'Blog articles', count: getSiteBlog().length, sample: `/blog/${getSiteBlog()[0]?.slug || ''}` },
+]
 
 // ── Sample data (written to localStorage on demand; nothing baked into views) ─
 export function clearDemoData() {
   ;['leads', 'quotes', 'designs', 'convos', 'docs', 'social', 'analytics'].forEach((k) => write(K[k], []))
   resetReviews(); resetBlog()
+  localStorage.removeItem(K.pages); emit()
 }
 export function loadSampleData() {
   ;[

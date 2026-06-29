@@ -2,8 +2,8 @@ import { useEffect, useReducer, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   LayoutDashboard, Inbox, FileText, Box, Star, Newspaper, Files,
-  MessageSquare, BarChart3, PenSquare, Share2,
-  ArrowLeft, Trash2, ExternalLink, Eraser, Sparkles, Send, Plus, Check, Pencil, X,
+  MessageSquare, BarChart3, PenSquare, Share2, Rocket, Calendar, Map, CheckCircle2,
+  ArrowLeft, Trash2, ExternalLink, Eraser, Sparkles, Send, Plus, Check, Pencil, X, Copy,
 } from 'lucide-react'
 import {
   getLeads, getQuotes, getDesigns,
@@ -13,12 +13,18 @@ import {
   getAnalytics,
   getSiteReviews, getReviewSummary, saveReview, deleteReview,
   getSiteBlog, saveBlogPost, deleteBlogPost,
-  getPages, setStatus, removeRecord, loadSampleData, clearDemoData,
+  getAllPages, getGeneratedPages, getPageFields, savePageFields,
+  getCustomPage, saveCustomPage, duplicatePage, createPage, deleteCustomPage,
+  setStatus, removeRecord, loadSampleData, clearDemoData,
 } from '../data/adminData'
+import { INTEGRATIONS, BRAND } from '../data/integrations'
+
+const ICONS = { Inbox, MessageSquare, BarChart3, PenSquare, Share2, Calendar, Newspaper, Map }
 
 // Nav — each maps to one of the self-hosted services, all demoed locally.
 const NAV = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  { id: 'setup', label: 'Setup', svc: 'Get started', icon: Rocket },
   { id: 'leads', label: 'Leads', svc: 'Twenty CRM', icon: Inbox },
   { id: 'quotes', label: 'Quotes', svc: 'Twenty CRM', icon: FileText },
   { id: 'designs', label: 'Designs', svc: '3D Builder', icon: Box },
@@ -98,7 +104,7 @@ export default function AdminDemoPage() {
             <ArrowLeft size={15} /> <span className="hidden sm:inline">Back to site</span>
           </Link>
           <div className="hidden sm:block h-5 w-px bg-white/10" />
-          <span className="font-display font-bold text-white truncate">QMC Admin</span>
+          <span className="font-display font-bold text-white truncate">{BRAND} Admin</span>
           <span className="rounded bg-brand/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-light">Demo</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -127,6 +133,7 @@ export default function AdminDemoPage() {
 
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 pb-20 sm:pb-6">
           {tab === 'overview' && <Overview setTab={setTab} />}
+          {tab === 'setup' && <Setup />}
           {tab === 'leads' && <Leads />}
           {tab === 'quotes' && <Quotes />}
           {tab === 'designs' && <Designs />}
@@ -171,6 +178,78 @@ function Overview({ setTab }) {
           </div>
         ))}
       </Card>
+    </div>
+  )
+}
+
+function Setup() {
+  const live = INTEGRATIONS.filter((m) => m.mode() === 'live').length
+  return (
+    <div className="space-y-6 max-w-4xl">
+      <div>
+        <h1 className="font-display text-2xl font-bold text-white">Get started</h1>
+        <p className="mt-1 text-sm text-slate-400">
+          Everything below already <span className="text-white font-medium">works in demo mode</span> — captured locally, no setup needed.
+          Connect each service when you’re ready to go live. {live} of {INTEGRATIONS.length} modules are connected.
+        </p>
+      </div>
+
+      <Card className="p-4 flex items-start gap-3 border-brand/30 bg-brand/5">
+        <Rocket size={18} className="text-brand mt-0.5 shrink-0" />
+        <div className="text-sm text-slate-300">
+          <span className="font-semibold text-white">Two ways to run this.</span> Keep it self-contained (everything runs in the browser, great for a demo or a small site),
+          or stand up the self-hosted stack in <code className="text-brand-light">docker-compose.yml</code> and flip the env keys below to go fully live.
+        </div>
+      </Card>
+
+      <div className="space-y-4">
+        {INTEGRATIONS.map((m) => {
+          const Icon = ICONS[m.icon] || Files
+          const isLive = m.mode() === 'live'
+          return (
+            <Card key={m.id} className="p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3 min-w-0">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/6 text-brand"><Icon size={17} /></span>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-white">{m.name}</span>
+                      <span className="rounded bg-white/8 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-300">{m.service}</span>
+                    </div>
+                    <p className="mt-0.5 text-sm text-slate-400">{m.summary}</p>
+                  </div>
+                </div>
+                <span className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold shrink-0 ${isLive ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
+                  {isLive ? <><CheckCircle2 size={12} /> Live</> : 'Demo'}
+                </span>
+              </div>
+
+              <p className="mt-3 text-xs text-slate-500"><span className="font-semibold text-slate-400">In the demo:</span> {m.demo}</p>
+
+              {!isLive && (
+                <div className="mt-3 rounded-lg border border-white/8 bg-black/20 p-4">
+                  <div className="text-[11px] font-semibold uppercase tracking-widest text-slate-500 mb-2">To go live</div>
+                  <ol className="space-y-1.5">
+                    {m.steps.map((s, i) => (
+                      <li key={i} className="flex gap-2.5 text-sm text-slate-300">
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/8 text-[11px] font-bold text-slate-400">{i + 1}</span>
+                        <span>{s}</span>
+                      </li>
+                    ))}
+                  </ol>
+                  {(m.keys.length > 0 || m.link) && (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      {m.keys.map((k) => <code key={k} className="rounded bg-white/8 px-1.5 py-0.5 text-[11px] text-brand-light">{k}</code>)}
+                      {m.where !== '—' && <span className="text-[11px] text-slate-600">in {m.where}</span>}
+                      {m.link && <a href={m.link} target="_blank" rel="noopener noreferrer" className="ml-auto inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline">Docs <ExternalLink size={11} /></a>}
+                    </div>
+                  )}
+                </div>
+              )}
+            </Card>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -473,22 +552,67 @@ function Blog() {
 }
 
 function Pages() {
-  const pages = getPages()
+  const pages = getAllPages()
+  const generated = getGeneratedPages()
+  const [edit, setEdit] = useState(null) // { kind:'core'|'custom', id, draft }
+
+  const openEdit = (pg) => {
+    if (pg.custom) setEdit({ kind: 'custom', id: pg.id, draft: { ...getCustomPage(pg.id) } })
+    else setEdit({ kind: 'core', id: pg.id, draft: { ...getPageFields(pg.id) } })
+  }
+  const save = () => {
+    if (edit.kind === 'custom') saveCustomPage(edit.draft)
+    else savePageFields(edit.id, edit.draft)
+    setEdit(null)
+  }
+  const set = (k, v) => setEdit((e) => ({ ...e, draft: { ...e.draft, [k]: v } }))
+
   return (
-    <div className="space-y-6 max-w-4xl">
-      <h1 className="font-display text-2xl font-bold text-white">Pages</h1>
+    <div className="space-y-5 max-w-4xl">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h1 className="font-display text-2xl font-bold text-white">Pages <span className="text-slate-500 text-lg">({pages.length})</span></h1>
+        <button onClick={() => { const slug = createPage(); setEdit({ kind: 'custom', id: slug, draft: { ...getCustomPage(slug) } }) }} className="flex items-center gap-1.5 rounded bg-brand px-3 py-1.5 text-xs font-semibold text-white"><Plus size={13} /> New page</button>
+      </div>
+      <p className="text-xs text-slate-500">Edit a page’s hero, or duplicate one to spin up a new page. Changes show on the site live (in this browser).</p>
+
+      {edit && (
+        <Card className="p-4 space-y-3 border-brand/40">
+          <div className="flex items-center justify-between"><span className="text-sm font-semibold text-white">Editing: {edit.kind === 'custom' ? (edit.draft.name || 'Custom page') : edit.id}</span><button onClick={() => setEdit(null)} className="text-slate-500 hover:text-white"><X size={16} /></button></div>
+          {edit.kind === 'custom' && <Field label="Page name" value={edit.draft.name || ''} onChange={(e) => set('name', e.target.value)} />}
+          <Field label="Eyebrow" value={edit.draft.eyebrow || ''} onChange={(e) => set('eyebrow', e.target.value)} />
+          <div className="grid sm:grid-cols-2 gap-3">
+            <Field label="Headline" value={edit.draft.title1 || ''} onChange={(e) => set('title1', e.target.value)} />
+            <Field label="Headline accent (2nd line)" value={edit.draft.title2 || ''} onChange={(e) => set('title2', e.target.value)} />
+          </div>
+          <label className="block"><span className="mb-1 block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Intro</span><textarea value={edit.draft.intro || ''} onChange={(e) => set('intro', e.target.value)} rows={3} className="w-full rounded border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white focus:border-brand focus:outline-none resize-none" /></label>
+          {edit.id === 'home' && edit.kind === 'core' && <Field label="Primary button label" value={edit.draft.cta || ''} onChange={(e) => set('cta', e.target.value)} />}
+          {edit.kind === 'custom' && <label className="block"><span className="mb-1 block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Body (HTML)</span><textarea value={edit.draft.body || ''} onChange={(e) => set('body', e.target.value)} rows={5} className="w-full rounded border border-white/10 bg-slate-900 px-3 py-2 text-xs font-mono text-white focus:border-brand focus:outline-none resize-none" /></label>}
+          <div className="flex gap-2"><button onClick={save} className="rounded bg-brand px-3 py-1.5 text-sm font-semibold text-white">Save</button><button onClick={() => setEdit(null)} className="rounded border border-white/15 px-3 py-1.5 text-sm text-slate-300">Cancel</button></div>
+        </Card>
+      )}
+
       <Card className="overflow-hidden"><div className="divide-y divide-white/6">
-        {pages.core.map((p) => (
-          <div key={p.path} className="flex items-center justify-between gap-3 p-4">
-            <div><div className="font-medium text-white">{p.name}</div><div className="text-xs text-slate-500">{p.path}</div></div>
-            <div className="flex items-center gap-3"><span className="rounded bg-white/8 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-slate-300">{p.type}</span><Link to={p.path} target="_blank" className="text-slate-500 hover:text-white"><ExternalLink size={14} /></Link></div>
+        {pages.map((p) => (
+          <div key={p.id} className="flex items-center justify-between gap-3 p-4">
+            <div className="min-w-0">
+              <div className="font-medium text-white truncate">{p.name}</div>
+              <div className="text-xs text-slate-500">{p.path}{!p.editable && p.note ? ` · ${p.note}` : ''}</div>
+            </div>
+            <div className="flex items-center gap-2.5 shrink-0">
+              <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${p.type === 'Custom' ? 'bg-violet-500/15 text-violet-300' : 'bg-white/8 text-slate-300'}`}>{p.type}</span>
+              {p.editable && <button onClick={() => openEdit(p)} title="Edit" className="text-slate-500 hover:text-white"><Pencil size={13} /></button>}
+              <button onClick={() => duplicatePage(p.id)} title="Duplicate" className="text-slate-500 hover:text-white"><Copy size={13} /></button>
+              <Link to={p.path} target="_blank" title="View" className="text-slate-500 hover:text-white"><ExternalLink size={14} /></Link>
+              {p.custom && <button onClick={() => deleteCustomPage(p.id)} title="Delete" className="text-slate-600 hover:text-red-400"><Trash2 size={14} /></button>}
+            </div>
           </div>
         ))}
       </div></Card>
+
       <div>
         <h2 className="text-sm font-semibold text-white mb-3">Auto-generated</h2>
         <div className="grid sm:grid-cols-2 gap-4">
-          {pages.generated.map((g) => (
+          {generated.map((g) => (
             <Card key={g.name} className="p-5"><div className="font-display text-3xl font-bold text-white">{g.count.toLocaleString()}</div><div className="text-sm text-slate-300">{g.name}</div><Link to={g.sample} target="_blank" className="mt-2 inline-flex items-center gap-1 text-xs text-brand hover:underline">View sample <ExternalLink size={11} /></Link></Card>
           ))}
         </div>

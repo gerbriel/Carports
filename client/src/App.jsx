@@ -4,6 +4,7 @@ import { HelmetProvider } from 'react-helmet-async'
 import Navbar from './components/layout/Navbar'
 import Footer from './components/layout/Footer'
 import ChatwootWidget from './components/ui/ChatwootWidget'
+import PlausibleScript from './components/ui/PlausibleScript'
 import DemoWidget from './components/ui/DemoWidget'
 import { trackPageview } from './data/adminData'
 import Home from './pages/Home'
@@ -19,6 +20,7 @@ import AgriculturalPage from './pages/services/AgriculturalPage'
 import BoatStoragePage from './pages/services/BoatStoragePage'
 import LocationsPage from './pages/LocationsPage'
 import CityPage from './pages/CityPage'
+import CustomPage from './pages/CustomPage'
 
 // Lazy-load the 3D builder so Three.js (~800KB) is only fetched when needed
 const BuilderPage = lazy(() => import('./pages/BuilderPage'))
@@ -69,6 +71,9 @@ function SiteLayout() {
           {/* Blog */}
           <Route path="/blog" element={<BlogListPage />} />
           <Route path="/blog/:slug" element={<BlogPostPage />} />
+
+          {/* Custom / duplicated pages created in the admin */}
+          <Route path="/p/:slug" element={<CustomPage />} />
         </Routes>
       </main>
       <Footer />
@@ -120,6 +125,7 @@ export default function App() {
         </Routes>
 
         <ChatwootWidget />
+        <PlausibleScript />
       </BrowserRouter>
     </HelmetProvider>
   )

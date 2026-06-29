@@ -2,6 +2,8 @@ import { Link } from 'react-router-dom'
 import { Car, Warehouse, Truck, Tractor, Anchor, ArrowRight, CheckCircle, Box, Phone } from 'lucide-react'
 import FadeIn from '../components/ui/FadeIn'
 import SEOHead from '../components/ui/SEOHead'
+import { getPageFields } from '../data/adminData'
+import { useAdminTick } from '../hooks/useAdminTick'
 
 const SERVICES = [
   {
@@ -82,6 +84,8 @@ const SERVICES = [
 ]
 
 export default function ServicesPage() {
+  useAdminTick()
+  const p = getPageFields('services')
   return (
     <>
     <SEOHead
@@ -94,12 +98,12 @@ export default function ServicesPage() {
       {/* Page header */}
       <div className="bg-slate-950">
         <div className="container py-16">
-          <span className="section-label-light">What We Build</span>
+          <span className="section-label-light">{p.eyebrow}</span>
           <h1 className="font-display text-5xl lg:text-7xl font-bold text-white leading-none mt-1 mb-4">
-            Our Services
+            {p.title1}{p.title2 && <><br /><span className="text-brand">{p.title2}</span></>}
           </h1>
           <p className="text-base text-slate-400 max-w-xl leading-relaxed">
-            Every structure we build is custom, engineered to your site, your dimensions, and how you actually plan to use it. Take a look at everything we build below.
+            {p.intro}
           </p>
           <div className="mt-6">
             <Link to="/builder"

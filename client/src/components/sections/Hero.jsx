@@ -1,5 +1,7 @@
 import { Link } from 'react-router-dom'
 import { ShieldCheck, ChevronDown, Phone, Box } from 'lucide-react'
+import { getPageFields } from '../../data/adminData'
+import { useAdminTick } from '../../hooks/useAdminTick'
 
 const STATS = [
   { value: '20', label: 'Yr Rust-Through' },
@@ -9,6 +11,8 @@ const STATS = [
 ]
 
 export default function Hero() {
+  useAdminTick()
+  const p = getPageFields('home')
   return (
     <section className="relative flex min-h-screen items-center overflow-hidden bg-slate-950">
       {/* Grid texture */}
@@ -28,7 +32,7 @@ export default function Hero() {
             style={{ animationDelay: '0ms', animation: 'fade-up 0.6s ease forwards' }}
           >
             <ShieldCheck size={14} />
-            CA LIC# 1096004 &nbsp;&middot;&nbsp; Fresno &amp; Northern California
+            {p.eyebrow}
           </div>
 
           {/* Headline */}
@@ -36,8 +40,7 @@ export default function Hero() {
             className="font-display text-7xl font-bold leading-none tracking-tight text-white lg:text-[96px]"
             style={{ animation: 'fade-up 0.6s ease 80ms both' }}
           >
-            Built to Last.<br />
-            <span className="text-brand">Steel Strong.</span>
+            {p.title1}{p.title2 && <><br /><span className="text-brand">{p.title2}</span></>}
           </h1>
 
           {/* Sub */}
@@ -45,7 +48,7 @@ export default function Hero() {
             className="mt-6 max-w-xl text-lg leading-relaxed text-slate-300"
             style={{ animation: 'fade-up 0.6s ease 160ms both' }}
           >
-            That truck, RV, or tractor sitting out in the Valley sun deserves better. We build custom steel carports, garages, and barns made for California weather, backed by warranties we put in writing and a local crew that sticks around long after the job is done.
+            {p.intro}
           </p>
 
           {/* CTAs */}
@@ -54,7 +57,7 @@ export default function Hero() {
             style={{ animation: 'fade-up 0.6s ease 240ms both' }}
           >
             <Link to="/contact" className="btn-primary-lg">
-              Get a Free Quote
+              {p.cta}
             </Link>
             <a href="tel:5597554900" className="btn-outline-white">
               <Phone size={16} />

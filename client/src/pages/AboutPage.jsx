@@ -1,6 +1,8 @@
 import { Link } from 'react-router-dom'
 import { ShieldCheck, Users, MapPin, Award, Phone } from 'lucide-react'
 import FadeIn from '../components/ui/FadeIn'
+import { getPageFields } from '../data/adminData'
+import { useAdminTick } from '../hooks/useAdminTick'
 
 const VALUES = [
   {
@@ -34,18 +36,19 @@ const MILESTONES = [
 ]
 
 export default function AboutPage() {
+  useAdminTick()
+  const p = getPageFields('about')
   return (
     <div className="min-h-screen bg-white pt-24">
       {/* Hero */}
       <div className="bg-slate-950">
         <div className="container py-16">
-          <span className="section-label-light">About Us</span>
+          <span className="section-label-light">{p.eyebrow}</span>
           <h1 className="font-display text-5xl lg:text-7xl font-bold text-white leading-none mt-1 mb-4">
-            Local. Accountable.<br />
-            <span className="text-brand">Steel Strong.</span>
+            {p.title1}{p.title2 && <><br /><span className="text-brand">{p.title2}</span></>}
           </h1>
           <p className="text-base text-slate-400 max-w-xl leading-relaxed">
-            Quality Metal Carports Inc. has been building custom metal structures in California for over 15 years. We are not a national franchise. We are a local team that shows up, does the work, and backs it with a real warranty.
+            {p.intro}
           </p>
         </div>
       </div>
