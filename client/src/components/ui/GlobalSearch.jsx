@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Search, X, MapPin, Wrench, FileText, Newspaper, Box, CornerDownLeft } from 'lucide-react'
 import { SEARCH_ENTRIES, TYPE_ORDER } from '../../data/searchIndex'
-import { BLOG_POSTS } from '../../data/blogPosts'
+import { getSiteBlog } from '../../data/adminData'
 
 const TYPE_META = {
   Page: { icon: FileText, label: 'Page' },
@@ -29,10 +29,10 @@ export default function GlobalSearch({ onClose }) {
   const inputRef = useRef(null)
   const listRef = useRef(null)
 
-  // Bundled blog posts become searchable entries.
+  // Blog posts become searchable entries.
   const blogEntries = useMemo(
     () =>
-      BLOG_POSTS.map((p, i) => ({
+      getSiteBlog().map((p, i) => ({
         id: `Article-${i}`,
         type: 'Article',
         title: p.title,

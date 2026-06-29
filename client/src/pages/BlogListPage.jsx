@@ -1,8 +1,19 @@
+import { useEffect, useReducer } from 'react'
 import { Link } from 'react-router-dom'
 import { Calendar, Clock, Tag, ArrowRight } from 'lucide-react'
 import SEOHead from '../components/ui/SEOHead'
 import FadeIn from '../components/ui/FadeIn'
-import { BLOG_POSTS } from '../data/blogPosts'
+import { getSiteBlog } from '../data/adminData'
+
+function useAdminTick() {
+  const [, force] = useReducer((x) => x + 1, 0)
+  useEffect(() => {
+    const h = () => force()
+    window.addEventListener('qmc-admin-change', h)
+    window.addEventListener('storage', h)
+    return () => { window.removeEventListener('qmc-admin-change', h); window.removeEventListener('storage', h) }
+  }, [])
+}
 
 function PostCard({ post, index }) {
   const date = new Date(post.published_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
@@ -50,7 +61,8 @@ function PostCard({ post, index }) {
 }
 
 export default function BlogListPage() {
-  const posts = BLOG_POSTS
+  useAdminTick()
+  const posts = getSiteBlog()
 
   return (
     <>

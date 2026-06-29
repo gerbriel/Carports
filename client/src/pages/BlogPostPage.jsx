@@ -2,11 +2,11 @@ import { useParams, Link } from 'react-router-dom'
 import { Calendar, Clock, Tag, ArrowLeft, ArrowRight } from 'lucide-react'
 import SEOHead from '../components/ui/SEOHead'
 import FadeIn from '../components/ui/FadeIn'
-import { getPostBySlug } from '../data/blogPosts'
+import { getBlogPostBySlug } from '../data/adminData'
 
 export default function BlogPostPage() {
   const { slug } = useParams()
-  const post = getPostBySlug(slug)
+  const post = getBlogPostBySlug(slug)
 
   if (!post) {
     return (

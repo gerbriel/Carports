@@ -1,10 +1,21 @@
+import { useEffect, useReducer } from 'react'
 import { Star } from 'lucide-react'
 import SectionHeader from '../ui/SectionHeader'
 import FadeIn from '../ui/FadeIn'
-// All reviews are bundled with the site (self-hosted, no API/fetch) so every one
-// always shows. To add/edit reviews, edit this file and rebuild — or use
-// `node server/scripts/add-review.mjs`, which writes to it.
-import reviewsData from '../../data/reviews.json'
+// Reviews are bundled (self-hosted, no API) but read through the admin overlay, so
+// edits made in the admin dashboard show here live (in that browser).
+import { getSiteReviews, getReviewSummary } from '../../data/adminData'
+
+// Re-render this section whenever the admin overlay changes.
+function useAdminTick() {
+  const [, force] = useReducer((x) => x + 1, 0)
+  useEffect(() => {
+    const h = () => force()
+    window.addEventListener('qmc-admin-change', h)
+    window.addEventListener('storage', h)
+    return () => { window.removeEventListener('qmc-admin-change', h); window.removeEventListener('storage', h) }
+  }, [])
+}
 
 function StarRating({ rating }) {
   return (
@@ -32,8 +43,9 @@ function GoogleLogo() {
 }
 
 export default function Reviews() {
-  const reviews = reviewsData.reviews
-  const summary = { rating: reviewsData.rating ?? 5, total: reviewsData.total ?? reviews.length }
+  useAdminTick()
+  const reviews = getSiteReviews()
+  const summary = getReviewSummary()
 
   // Build a seamless loop: repeat until one copy comfortably exceeds the viewport,
   // then duplicate it. Each card carries its own right margin so translateX(-50%)

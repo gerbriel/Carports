@@ -5,6 +5,7 @@ import Navbar from './components/layout/Navbar'
 import Footer from './components/layout/Footer'
 import ChatwootWidget from './components/ui/ChatwootWidget'
 import DemoWidget from './components/ui/DemoWidget'
+import { trackPageview } from './data/adminData'
 import Home from './pages/Home'
 import ServicesPage from './pages/ServicesPage'
 import AboutPage from './pages/AboutPage'
@@ -26,7 +27,11 @@ const AdminDemoPage = lazy(() => import('./pages/AdminDemoPage'))
 
 function ScrollToTop() {
   const { pathname } = useLocation()
-  useEffect(() => { window.scrollTo(0, 0) }, [pathname])
+  useEffect(() => {
+    window.scrollTo(0, 0)
+    // Privacy-friendly, client-side analytics (no API). Skip the admin itself.
+    if (!pathname.startsWith('/admin')) trackPageview(pathname)
+  }, [pathname])
   return null
 }
 
