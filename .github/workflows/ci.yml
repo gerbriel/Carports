@@ -44,10 +44,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-          cache-dependency-path: server/package-lock.json
-      # Skip the optional native dep (duckdb) — not needed to validate the code.
-      - run: npm ci --omit=optional
+      # node --check validates syntax without installing deps (the server has an
+      # optional native dep, duckdb, that isn't needed to lint the code).
       - name: Syntax-check server sources
         run: |
           node --check index.js
