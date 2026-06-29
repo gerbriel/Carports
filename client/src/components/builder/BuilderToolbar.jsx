@@ -48,14 +48,14 @@ export default function BuilderToolbar() {
     if (currentType) store.applyBuildingType(currentType)
   }
 
-  const btnBase = 'flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition-colors'
+  const btnBase = 'flex shrink-0 items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors'
   const btnActive = 'bg-brand text-white'
   const btnIdle = 'text-slate-400 hover:text-white hover:bg-white/8'
 
   return (
-    <div className="flex items-center justify-between px-4 py-2 bg-slate-900 border-t border-white/8 shrink-0">
-      {/* Left: view controls */}
-      <div className="flex items-center gap-1.5 flex-wrap">
+    <div className="flex items-center justify-between gap-2 px-3 sm:px-4 py-2 bg-slate-900 border-t border-white/8 shrink-0">
+      {/* Left: view controls (scroll horizontally on small screens) */}
+      <div className="flex items-center gap-1.5 flex-nowrap overflow-x-auto min-w-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {/* Frame-only */}
         <button
           onClick={() => store.setViewMode(isWireframe ? 'normal' : 'wireframe')}
@@ -143,19 +143,19 @@ export default function BuilderToolbar() {
       </div>
 
       {/* Right: pricing + CTA */}
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-2 sm:gap-4 shrink-0">
         <div className="text-right">
           <div className="text-[10px] uppercase tracking-widest text-slate-500">Est. Price</div>
-          <div className="font-display text-2xl font-bold text-white leading-none">
+          <div className="font-display text-lg sm:text-2xl font-bold text-white leading-none">
             ${pricing.subtotal.toLocaleString()}
           </div>
-          <div className="text-[10px] text-slate-500">${pricing.deposit.toLocaleString()} deposit</div>
+          <div className="hidden sm:block text-[10px] text-slate-500">${pricing.deposit.toLocaleString()} deposit</div>
         </div>
         <Link
           to={`/contact?config=${encodeURIComponent(`${store.width}×${store.length}×${store.height}ft – ${buildingLabel}`)}&price=${pricing.subtotal}`}
-          className="rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white hover:bg-brand-dark transition-colors"
+          className="rounded-lg bg-brand px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-white hover:bg-brand-dark transition-colors whitespace-nowrap"
         >
-          Get Formal Quote
+          <span className="sm:hidden">Quote</span><span className="hidden sm:inline">Get Formal Quote</span>
         </Link>
       </div>
     </div>

@@ -22,14 +22,14 @@ const NAV_LINKS = [
 function ServicesDropdown({ open }) {
   return (
     <div
-      className={`absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 rounded-lg border border-white/10 bg-slate-950/98 backdrop-blur-md shadow-xl shadow-black/40 overflow-hidden transition-all duration-200 ${
+      className={`absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl shadow-black/60 overflow-hidden transition-all duration-200 ${
         open ? 'opacity-100 translate-y-0 pointer-events-auto' : 'opacity-0 -translate-y-2 pointer-events-none'
       }`}
     >
       <div className="py-1.5">
         <Link
           to="/services"
-          className="flex items-center justify-between px-4 py-2.5 text-xs font-semibold uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors border-b border-white/6 mb-1"
+          className="flex items-center justify-between px-4 py-2.5 text-xs font-semibold uppercase tracking-widest text-slate-400 hover:text-white transition-colors border-b border-slate-700/70 mb-1"
         >
           All Services
         </Link>
@@ -37,14 +37,14 @@ function ServicesDropdown({ open }) {
           <Link
             key={link.to}
             to={link.to}
-            className="block px-4 py-2.5 text-sm text-slate-300 hover:text-white hover:bg-white/6 transition-colors"
+            className="block px-4 py-2.5 text-sm font-medium text-slate-100 hover:text-white hover:bg-brand/20 transition-colors"
           >
             {link.label}
           </Link>
         ))}
         <Link
           to="/locations"
-          className="flex items-center gap-2 px-4 py-2.5 text-xs font-semibold uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors border-t border-white/6 mt-1"
+          className="flex items-center gap-2 px-4 py-2.5 text-xs font-semibold uppercase tracking-widest text-slate-400 hover:text-white transition-colors border-t border-slate-700/70 mt-1"
         >
           <MapPin size={11} /> Service Areas
         </Link>

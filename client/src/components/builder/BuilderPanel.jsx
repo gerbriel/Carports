@@ -2042,7 +2042,7 @@ export function PartsSidebar() {
   const store = useBuilderStore()
   if (!store.showLabels) return null
   return (
-    <div className="w-72 shrink-0 border-r border-white/8 bg-slate-950 overflow-hidden flex flex-col">
+    <div className="absolute lg:relative inset-y-0 left-0 z-40 w-[86%] max-w-xs lg:w-72 lg:max-w-none shrink-0 border-r border-white/8 bg-slate-950 overflow-hidden flex flex-col">
       <div className="px-4 py-3 border-b border-white/8 flex items-center justify-between">
         <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 flex items-center gap-1.5">
           <Layers size={13} /> Components / Parts
@@ -2166,7 +2166,7 @@ export function VehiclesSidebar() {
   const store = useBuilderStore()
   if (!store.showVehicles) return null
   return (
-    <div className="w-72 shrink-0 border-r border-white/8 bg-slate-950 overflow-hidden flex flex-col">
+    <div className="absolute lg:relative inset-y-0 left-0 z-40 w-[86%] max-w-xs lg:w-72 lg:max-w-none shrink-0 border-r border-white/8 bg-slate-950 overflow-hidden flex flex-col">
       <div className="px-4 py-3 border-b border-white/8 flex items-center justify-between">
         <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 flex items-center gap-1.5">
           <Car size={13} /> Vehicles
