@@ -24,7 +24,7 @@ export default function Footer() {
           {/* Brand */}
           <div className="lg:col-span-1">
             <Link to="/" className="inline-flex items-center mb-4" aria-label="Quality Metal Carports home">
-              <img src="/logo.png" alt="Quality Metal Carports" className="h-12 w-auto" />
+              <img src={`${import.meta.env.BASE_URL}logo.png`} alt="Quality Metal Carports" className="h-12 w-auto" />
             </Link>
             <p className="text-sm text-slate-400 leading-relaxed mb-5">
               Custom steel structures built for California, backed by real written warranties and decades of hands-on experience.

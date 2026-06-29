@@ -117,7 +117,7 @@ export default function Navbar() {
         <div className="flex h-18 items-center justify-between py-4">
           {/* Logo */}
           <Link to="/" className="flex items-center gap-3 shrink-0" aria-label="Quality Metal Carports home">
-            <img src="/logo.png" alt="Quality Metal Carports" className="h-10 w-auto" loading="eager" />
+            <img src={`${import.meta.env.BASE_URL}logo.png`} alt="Quality Metal Carports" className="h-10 w-auto" loading="eager" />
             <span className="hidden xl:block whitespace-nowrap text-[10px] font-medium uppercase tracking-widest text-slate-400">
               CA LIC# 1096004
             </span>
