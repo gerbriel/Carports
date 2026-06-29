@@ -24,6 +24,8 @@ const K = {
   blog: 'qmc_blog_overlay',
   reviews: 'qmc_reviews_overlay',
   pages: 'qmc_pages_overlay',
+  users: 'qmc_users',
+  templates: 'qmc_templates',
 }
 
 const emit = () => window.dispatchEvent(new CustomEvent('qmc-admin-change'))
@@ -48,6 +50,11 @@ export function setStatus(kind, id, status) {
 export function removeRecord(kind, id) {
   const key = K[kind]; if (!key) return
   write(key, read(key).filter((r) => r.id !== id))
+}
+// Assign/reassign any record (lead, quote, conversation, document) to a user.
+export function assign(kind, id, userId) {
+  const key = K[kind]; if (!key) return
+  write(key, read(key).map((r) => (r.id === id ? { ...r, assignee: userId || null } : r)))
 }
 
 // ── Leads / Quotes / Designs (captured from the live site) ───────────────────
@@ -222,11 +229,83 @@ export const getGeneratedPages = () => [
   { name: 'Blog articles', count: getSiteBlog().length, sample: `/blog/${getSiteBlog()[0]?.slug || ''}` },
 ]
 
+// ── Team: users, roles & permissions ─────────────────────────────────────────
+// Roles gate what each user can do. Permissions are advisory in the demo (the
+// dashboard reads them to show/hide), but the shape is real so a backend can
+// enforce them later.
+export const PERMISSIONS = [
+  { id: 'users', label: 'Manage team' },
+  { id: 'leads', label: 'Leads' },
+  { id: 'quotes', label: 'Quotes' },
+  { id: 'documents', label: 'Documents' },
+  { id: 'content', label: 'Pages & blog' },
+  { id: 'chat', label: 'Inbox / chat' },
+  { id: 'analytics', label: 'Analytics' },
+  { id: 'social', label: 'Social' },
+]
+export const ROLES = {
+  admin: { label: 'Admin', desc: 'Full access — team, settings, and every module.', perms: ['users', 'leads', 'quotes', 'documents', 'content', 'chat', 'analytics', 'social'] },
+  manager: { label: 'Manager', desc: 'Runs the day-to-day: leads, quotes, docs, content & assignments.', perms: ['leads', 'quotes', 'documents', 'content', 'chat', 'analytics', 'social'] },
+  sales: { label: 'Sales', desc: 'Works assigned leads, quotes and live chats.', perms: ['leads', 'quotes', 'chat'] },
+  viewer: { label: 'Viewer', desc: 'Read-only — reports and analytics.', perms: ['analytics'] },
+}
+export const roleCan = (role, perm) => !!ROLES[role]?.perms.includes(perm)
+
+const DEFAULT_USERS = [
+  { id: 'u-carlos', name: 'Carlos Dominguez', email: 'carlos@qualitymetalcarportsca.com', role: 'admin', active: true },
+  { id: 'u-gabriel', name: 'Gabriel Rios', email: 'gabriel@qualitymetalcarportsca.com', role: 'manager', active: true },
+  { id: 'u-piper', name: 'Piper Vance', email: 'piper@qualitymetalcarportsca.com', role: 'sales', active: true },
+  { id: 'u-gladis', name: 'Gladis Romero', email: 'gladis@qualitymetalcarportsca.com', role: 'sales', active: true },
+]
+export function getUsers() {
+  let u = read(K.users, null)
+  if (!u) { u = DEFAULT_USERS; try { localStorage.setItem(K.users, JSON.stringify(u)) } catch { /* demo */ } }
+  return u
+}
+export const getUser = (id) => getUsers().find((u) => u.id === id) || null
+export const getUserName = (id) => getUser(id)?.name || null
+export const addUser = (u) => { const arr = getUsers(); arr.push({ id: uid(), active: true, role: 'sales', ...u }); write(K.users, arr) }
+export const updateUser = (id, patch) => write(K.users, getUsers().map((u) => (u.id === id ? { ...u, ...patch } : u)))
+
+// Count records currently assigned to a user across every module.
+export function assignedCount(userId) {
+  const kinds = ['leads', 'quotes', 'convos', 'docs']
+  return kinds.reduce((n, k) => n + read(K[k]).filter((r) => r.assignee === userId).length, 0)
+}
+// Remove a user, handing their leads/quotes/chats/documents to someone else
+// (or leaving them unassigned when reassignTo is null).
+export function removeUser(id, reassignTo = null) {
+  ;['leads', 'quotes', 'convos', 'docs'].forEach((k) => {
+    write(K[k], read(K[k]).map((r) => (r.assignee === id ? { ...r, assignee: reassignTo } : r)))
+  })
+  write(K.users, getUsers().filter((u) => u.id !== id))
+}
+
+// ── Templates: what quotes & documents look like ─────────────────────────────
+const DEFAULT_TEMPLATES = [
+  { id: 't-quote', name: 'Standard Quote', type: 'quote', subject: 'Your custom metal building quote', body: '<h2>Your Custom Metal Building Quote</h2><p>Thank you for considering Quality Metal Carports. Below is your itemized quote — valid for 30 days.</p><ul><li>Engineer-stamped drawings included</li><li>Free delivery &amp; professional installation</li><li>20-year rust-through warranty</li></ul><p>Questions? Call us at 559-755-4900.</p>' },
+  { id: 't-agreement', name: 'Installation Agreement', type: 'document', subject: 'Installation agreement', body: '<h2>Installation Agreement</h2><p>This agreement covers the manufacture, delivery, and installation of the structure described in your accepted quote.</p><h3>Site preparation</h3><p>The customer is responsible for a level, accessible install site.</p><h3>Warranty</h3><p>Backed by our written 20-year rust-through warranty.</p>' },
+  { id: 't-invoice', name: 'Deposit Invoice', type: 'document', subject: 'Deposit invoice', body: '<h2>Deposit Invoice</h2><p>A 10% deposit reserves your build slot and locks in pricing. The balance is due on installation day.</p>' },
+]
+export function getTemplates() {
+  let t = read(K.templates, null)
+  if (!t) { t = DEFAULT_TEMPLATES; try { localStorage.setItem(K.templates, JSON.stringify(t)) } catch { /* demo */ } }
+  return t
+}
+export const getTemplate = (id) => getTemplates().find((t) => t.id === id) || null
+export function saveTemplate(tpl) {
+  const arr = getTemplates(); const i = arr.findIndex((t) => t.id === tpl.id)
+  if (i >= 0) arr[i] = { ...arr[i], ...tpl }; else arr.unshift({ id: uid(), type: 'document', ...tpl })
+  write(K.templates, arr)
+}
+export const removeTemplate = (id) => write(K.templates, getTemplates().filter((t) => t.id !== id))
+
 // ── Sample data (written to localStorage on demand; nothing baked into views) ─
 export function clearDemoData() {
   ;['leads', 'quotes', 'designs', 'convos', 'docs', 'social', 'analytics'].forEach((k) => write(K[k], []))
   resetReviews(); resetBlog()
-  localStorage.removeItem(K.pages); emit()
+  ;[K.pages, K.users, K.templates].forEach((k) => localStorage.removeItem(k))
+  emit()
 }
 export function loadSampleData() {
   ;[
@@ -263,6 +342,13 @@ export function loadSampleData() {
     { platform: 'Facebook', content: 'Fall booking is filling up — lock in your 2026 install date now.', when: new Date(Date.now() + 3 * 86400000).toISOString(), status: 'scheduled' },
     { platform: 'Instagram', content: 'Behind the scenes at the World Ag Expo 🚜', when: new Date(Date.now() - 2 * 86400000).toISOString(), status: 'posted' },
   ].forEach(addSocialPost)
+  // Spread the new work across the team so assignment is visible in the demo.
+  getUsers()
+  const spread = (kind, ids) => { const arr = read(K[kind]); arr.forEach((r, i) => { r.assignee = ids[i % ids.length] }); write(K[kind], arr) }
+  spread('leads', ['u-piper', 'u-gladis', 'u-gabriel'])
+  spread('quotes', ['u-gabriel', 'u-piper'])
+  spread('convos', ['u-piper', 'u-gladis'])
+  spread('docs', ['u-gabriel', 'u-piper', 'u-gladis'])
   // a little analytics history
   try {
     const paths = ['/', '/services/metal-garages', '/locations/fresno-ca', '/blog', '/services/rv-covers', '/contact', '/builder']

@@ -4,6 +4,7 @@ import {
   LayoutDashboard, Inbox, FileText, Box, Star, Newspaper, Files,
   MessageSquare, BarChart3, PenSquare, Share2, Rocket, Calendar, Map, CheckCircle2,
   ArrowLeft, Trash2, ExternalLink, Eraser, Sparkles, Send, Plus, Check, Pencil, X, Copy,
+  Users, Shield, LayoutTemplate, UserPlus, AlertTriangle,
 } from 'lucide-react'
 import {
   getLeads, getQuotes, getDesigns,
@@ -15,9 +16,13 @@ import {
   getSiteBlog, saveBlogPost, deleteBlogPost,
   getAllPages, getGeneratedPages, getPageFields, savePageFields,
   getCustomPage, saveCustomPage, duplicatePage, createPage, deleteCustomPage,
+  getUsers, getUserName, addUser, updateUser, removeUser, assignedCount, assign,
+  ROLES, PERMISSIONS, roleCan,
+  getTemplates, getTemplate, saveTemplate, removeTemplate,
   setStatus, removeRecord, loadSampleData, clearDemoData,
 } from '../data/adminData'
 import { INTEGRATIONS, BRAND } from '../data/integrations'
+import ContentEditor from '../components/admin/ContentEditor'
 
 const ICONS = { Inbox, MessageSquare, BarChart3, PenSquare, Share2, Calendar, Newspaper, Map }
 
@@ -31,10 +36,12 @@ const NAV = [
   { id: 'inbox', label: 'Inbox', svc: 'Chatwoot', icon: MessageSquare },
   { id: 'analytics', label: 'Analytics', svc: 'Plausible', icon: BarChart3 },
   { id: 'documents', label: 'Documents', svc: 'Documenso', icon: PenSquare },
+  { id: 'templates', label: 'Templates', svc: 'Quotes & docs', icon: LayoutTemplate },
   { id: 'social', label: 'Social', svc: 'Postiz', icon: Share2 },
   { id: 'reviews', label: 'Reviews', svc: 'Editable', icon: Star },
   { id: 'blog', label: 'Blog', svc: 'Ghost / CMS', icon: Newspaper },
   { id: 'pages', label: 'Pages', icon: Files },
+  { id: 'team', label: 'Team', svc: 'Users & roles', icon: Users },
 ]
 
 const LEAD_STATUSES = ['new', 'contacted', 'quoted', 'won', 'lost']
@@ -91,6 +98,24 @@ const Field = ({ label, ...p }) => (
     <input {...p} className="w-full rounded border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-600 focus:border-brand focus:outline-none" />
   </label>
 )
+const ROLE_COLOR = { admin: 'bg-rose-500/15 text-rose-300', manager: 'bg-violet-500/15 text-violet-300', sales: 'bg-blue-500/15 text-blue-300', viewer: 'bg-slate-500/15 text-slate-400' }
+const initials = (name = '') => name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()
+function Avatar({ id, size = 24 }) {
+  const name = getUserName(id)
+  if (!name) return <span className="inline-flex items-center justify-center rounded-full bg-white/8 text-slate-500" style={{ width: size, height: size, fontSize: size * 0.42 }}>?</span>
+  return <span title={name} className="inline-flex items-center justify-center rounded-full bg-brand/25 font-semibold text-brand-light" style={{ width: size, height: size, fontSize: size * 0.4 }}>{initials(name)}</span>
+}
+// Assign/reassign a record to a team member. Reusable across every module.
+function AssigneeSelect({ kind, id, value }) {
+  const users = getUsers()
+  return (
+    <select value={value || ''} onChange={(e) => assign(kind, id, e.target.value || null)} title="Assigned to"
+      className="rounded border border-white/10 bg-slate-900 px-2 py-1 text-xs text-slate-200 focus:border-brand focus:outline-none max-w-[8.5rem]">
+      <option value="">Unassigned</option>
+      {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+    </select>
+  )
+}
 
 export default function AdminDemoPage() {
   const [tab, setTab] = useState('overview')
@@ -140,10 +165,12 @@ export default function AdminDemoPage() {
           {tab === 'inbox' && <InboxView />}
           {tab === 'analytics' && <Analytics />}
           {tab === 'documents' && <Documents />}
+          {tab === 'templates' && <Templates />}
           {tab === 'social' && <Social />}
           {tab === 'reviews' && <Reviews />}
           {tab === 'blog' && <Blog />}
           {tab === 'pages' && <Pages />}
+          {tab === 'team' && <Team />}
         </main>
       </div>
     </div>
@@ -274,6 +301,7 @@ function Leads() {
               <div className="flex sm:flex-col items-end gap-2 shrink-0">
                 <span className="text-xs text-slate-500">{fmtDate(l.createdAt)}</span>
                 <select value={l.status} onChange={(e) => setStatus('leads', l.id, e.target.value)} className="rounded border border-white/10 bg-slate-900 px-2 py-1 text-xs text-slate-200 focus:border-brand focus:outline-none">{LEAD_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+                <AssigneeSelect kind="leads" id={l.id} value={l.assignee} />
                 <button onClick={() => removeRecord('leads', l.id)} className="text-slate-600 hover:text-red-400"><Trash2 size={14} /></button>
               </div>
             </div>
@@ -297,6 +325,7 @@ function Quotes() {
               <div className="flex items-center gap-4 shrink-0">
                 {q.price != null && <span className="font-display text-lg font-bold text-white">${Number(q.price).toLocaleString()}</span>}
                 <select value={q.status} onChange={(e) => setStatus('quotes', q.id, e.target.value)} className="rounded border border-white/10 bg-slate-900 px-2 py-1 text-xs text-slate-200 focus:border-brand focus:outline-none">{QUOTE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+                <AssigneeSelect kind="quotes" id={q.id} value={q.assignee} />
                 <button onClick={() => removeRecord('quotes', q.id)} className="text-slate-600 hover:text-red-400"><Trash2 size={14} /></button>
               </div>
             </div>
@@ -349,7 +378,10 @@ function InboxView() {
           ))}
         </div></Card>
         <Card className="flex flex-col h-[60vh]">
-          <div className="border-b border-white/8 px-4 py-3"><div className="font-semibold text-white">{active?.name}</div><div className="text-xs text-slate-500">{active?.channel}</div></div>
+          <div className="flex items-center justify-between gap-3 border-b border-white/8 px-4 py-3">
+            <div><div className="font-semibold text-white">{active?.name}</div><div className="text-xs text-slate-500">{active?.channel}</div></div>
+            {active && <div className="flex items-center gap-1.5 text-[11px] text-slate-500"><span className="hidden sm:inline">Assigned</span><AssigneeSelect kind="convos" id={active.id} value={active.assignee} /></div>}
+          </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             {(active?.messages || []).map((m, i) => (
               <div key={i} className={`flex ${m.from === 'agent' ? 'justify-end' : 'justify-start'}`}><div className={`max-w-[75%] rounded-2xl px-3.5 py-2 text-sm ${m.from === 'agent' ? 'bg-brand text-white' : 'bg-white/8 text-slate-200'}`}>{m.text}</div></div>
@@ -403,12 +435,28 @@ function Analytics() {
 
 function Documents() {
   const docs = getDocuments()
-  const [form, setForm] = useState({ title: '', recipient: '', amount: '' })
+  const templates = getTemplates(); const users = getUsers()
+  const [form, setForm] = useState({ title: '', recipient: '', amount: '', template: '', assignee: '' })
+  const selCls = 'w-full rounded border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-200 focus:border-brand focus:outline-none'
   return (
     <div className="space-y-4 max-w-4xl">
       <h1 className="font-display text-2xl font-bold text-white">Documents <span className="text-slate-500 text-sm">· Documenso e-sign</span></h1>
-      <Card className="p-4">
-        <form onSubmit={(e) => { e.preventDefault(); if (form.title) { addDocument({ title: form.title, recipient: form.recipient, amount: form.amount ? Number(form.amount) : null, status: 'draft' }); setForm({ title: '', recipient: '', amount: '' }) } }} className="grid sm:grid-cols-[1fr_1fr_120px_auto] gap-2 items-end">
+      <Card className="p-4 space-y-3">
+        <div className="grid sm:grid-cols-2 gap-2">
+          <label className="block"><span className="mb-1 block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Start from template</span>
+            <select value={form.template} onChange={(e) => { const t = getTemplate(e.target.value); setForm({ ...form, template: e.target.value, title: t ? `${t.name} — ` : form.title }) }} className={selCls}>
+              <option value="">Blank document</option>
+              {templates.map((t) => <option key={t.id} value={t.id}>{t.name} · {t.type}</option>)}
+            </select>
+          </label>
+          <label className="block"><span className="mb-1 block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Assign to</span>
+            <select value={form.assignee} onChange={(e) => setForm({ ...form, assignee: e.target.value })} className={selCls}>
+              <option value="">Unassigned</option>
+              {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+          </label>
+        </div>
+        <form onSubmit={(e) => { e.preventDefault(); if (form.title) { addDocument({ title: form.title, recipient: form.recipient, amount: form.amount ? Number(form.amount) : null, status: 'draft', templateId: form.template || null, assignee: form.assignee || null }); setForm({ title: '', recipient: '', amount: '', template: '', assignee: '' }) } }} className="grid sm:grid-cols-[1fr_1fr_120px_auto] gap-2 items-end">
           <Field label="Document" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Quote #1043 — …" />
           <Field label="Recipient email" value={form.recipient} onChange={(e) => setForm({ ...form, recipient: e.target.value })} placeholder="customer@example.com" />
           <Field label="Amount" type="number" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0" />
@@ -419,9 +467,10 @@ function Documents() {
         <Card className="overflow-hidden"><div className="divide-y divide-white/6">
           {docs.map((d) => (
             <div key={d.id} className="flex items-center justify-between gap-3 p-4">
-              <div className="min-w-0"><div className="font-medium text-white truncate">{d.title}</div><div className="text-xs text-slate-500">{d.recipient || 'no recipient'}{d.amount ? ` · $${Number(d.amount).toLocaleString()}` : ''} · {fmtDate(d.createdAt)}</div></div>
-              <div className="flex items-center gap-3 shrink-0">
+              <div className="min-w-0"><div className="font-medium text-white truncate">{d.title}</div><div className="text-xs text-slate-500">{d.recipient || 'no recipient'}{d.amount ? ` · $${Number(d.amount).toLocaleString()}` : ''} · {fmtDate(d.createdAt)}{d.templateId && getTemplate(d.templateId) ? ` · ${getTemplate(d.templateId).name}` : ''}</div></div>
+              <div className="flex items-center gap-2.5 shrink-0">
                 <Badge value={d.status} />
+                <AssigneeSelect kind="docs" id={d.id} value={d.assignee} />
                 {d.status === 'draft' && <button onClick={() => setStatus('docs', d.id, 'sent')} className="rounded border border-white/15 px-2 py-1 text-xs text-slate-200 hover:bg-white/10">Send</button>}
                 {d.status === 'sent' && <button onClick={() => signDocument(d.id)} className="flex items-center gap-1 rounded bg-emerald-600/80 px-2 py-1 text-xs font-semibold text-white hover:bg-emerald-600"><Check size={12} /> Sign</button>}
                 <button onClick={() => removeRecord('docs', d.id)} className="text-slate-600 hover:text-red-400"><Trash2 size={14} /></button>
@@ -530,7 +579,9 @@ function Blog() {
           <Field label="Title" value={edit.title} onChange={(e) => setEdit({ ...edit, title: e.target.value })} />
           <div className="grid sm:grid-cols-2 gap-3"><Field label="Tag" value={edit.tag} onChange={(e) => setEdit({ ...edit, tag: e.target.value })} /><Field label="Date" value={fmtDate(edit.published_at)} disabled /></div>
           <label className="block"><span className="mb-1 block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Excerpt</span><textarea value={edit.excerpt} onChange={(e) => setEdit({ ...edit, excerpt: e.target.value })} rows={2} className="w-full rounded border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white focus:border-brand focus:outline-none resize-none" /></label>
-          <label className="block"><span className="mb-1 block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Body (HTML)</span><textarea value={edit.html} onChange={(e) => setEdit({ ...edit, html: e.target.value })} rows={6} className="w-full rounded border border-white/10 bg-slate-900 px-3 py-2 text-xs font-mono text-white focus:border-brand focus:outline-none resize-none" /></label>
+          <div><span className="mb-1 block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Body</span>
+            <ContentEditor value={{ html: edit.html, ...(edit.editor || {}) }} onChange={(c) => setEdit((e) => ({ ...e, html: c.html, editor: { format: c.format, text: c.text, blocks: c.blocks } }))} />
+          </div>
           <div className="flex gap-2"><button onClick={save} className="rounded bg-brand px-3 py-1.5 text-sm font-semibold text-white">Save & publish</button><button onClick={() => setEdit(null)} className="rounded border border-white/15 px-3 py-1.5 text-sm text-slate-300">Cancel</button></div>
         </Card>
       )}
@@ -586,7 +637,11 @@ function Pages() {
           </div>
           <label className="block"><span className="mb-1 block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Intro</span><textarea value={edit.draft.intro || ''} onChange={(e) => set('intro', e.target.value)} rows={3} className="w-full rounded border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white focus:border-brand focus:outline-none resize-none" /></label>
           {edit.id === 'home' && edit.kind === 'core' && <Field label="Primary button label" value={edit.draft.cta || ''} onChange={(e) => set('cta', e.target.value)} />}
-          {edit.kind === 'custom' && <label className="block"><span className="mb-1 block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Body (HTML)</span><textarea value={edit.draft.body || ''} onChange={(e) => set('body', e.target.value)} rows={5} className="w-full rounded border border-white/10 bg-slate-900 px-3 py-2 text-xs font-mono text-white focus:border-brand focus:outline-none resize-none" /></label>}
+          {edit.kind === 'custom' && (
+            <div><span className="mb-1 block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Body</span>
+              <ContentEditor value={{ html: edit.draft.body || '', ...(edit.draft.bodyEditor || {}) }} onChange={(c) => setEdit((e) => ({ ...e, draft: { ...e.draft, body: c.html, bodyEditor: { format: c.format, text: c.text, blocks: c.blocks } } }))} />
+            </div>
+          )}
           <div className="flex gap-2"><button onClick={save} className="rounded bg-brand px-3 py-1.5 text-sm font-semibold text-white">Save</button><button onClick={() => setEdit(null)} className="rounded border border-white/15 px-3 py-1.5 text-sm text-slate-300">Cancel</button></div>
         </Card>
       )}
@@ -617,6 +672,150 @@ function Pages() {
           ))}
         </div>
       </div>
+    </div>
+  )
+}
+
+const stripHtml = (h = '') => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+const selCls = 'w-full rounded border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-200 focus:border-brand focus:outline-none'
+
+function Templates() {
+  const templates = getTemplates()
+  const [edit, setEdit] = useState(null)
+  const save = () => { if (edit.name) { saveTemplate(edit); setEdit(null) } }
+  return (
+    <div className="space-y-5 max-w-3xl">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h1 className="font-display text-2xl font-bold text-white">Templates <span className="text-slate-500 text-lg">({templates.length})</span></h1>
+        <button onClick={() => setEdit({ name: 'Untitled template', type: 'document', subject: '', body: '<p></p>' })} className="flex items-center gap-1.5 rounded bg-brand px-3 py-1.5 text-xs font-semibold text-white"><Plus size={13} /> New template</button>
+      </div>
+      <p className="text-xs text-slate-500">Control what your quotes and documents look like. Pick a template when you create a document.</p>
+
+      {edit && (
+        <Card className="p-4 space-y-3 border-brand/40">
+          <div className="flex items-center justify-between"><span className="text-sm font-semibold text-white">{edit.id ? 'Edit template' : 'New template'}</span><button onClick={() => setEdit(null)} className="text-slate-500 hover:text-white"><X size={16} /></button></div>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <Field label="Template name" value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} />
+            <label className="block"><span className="mb-1 block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Type</span>
+              <select value={edit.type} onChange={(e) => setEdit({ ...edit, type: e.target.value })} className={selCls}><option value="quote">Quote</option><option value="document">Document</option></select>
+            </label>
+          </div>
+          <Field label="Subject / heading" value={edit.subject || ''} onChange={(e) => setEdit({ ...edit, subject: e.target.value })} placeholder="Your custom metal building quote" />
+          <div><span className="mb-1 block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Body</span>
+            <ContentEditor value={{ html: edit.body, ...(edit.bodyEditor || {}) }} onChange={(c) => setEdit((e) => ({ ...e, body: c.html, bodyEditor: { format: c.format, text: c.text, blocks: c.blocks } }))} />
+          </div>
+          <div className="flex gap-2"><button onClick={save} className="rounded bg-brand px-3 py-1.5 text-sm font-semibold text-white">Save</button><button onClick={() => setEdit(null)} className="rounded border border-white/15 px-3 py-1.5 text-sm text-slate-300">Cancel</button></div>
+        </Card>
+      )}
+
+      <div className="space-y-3">
+        {templates.map((t) => (
+          <Card key={t.id} className="p-4 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2"><span className="font-medium text-white">{t.name}</span><span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${t.type === 'quote' ? 'bg-violet-500/15 text-violet-300' : 'bg-blue-500/15 text-blue-300'}`}>{t.type}</span></div>
+              <p className="mt-1 text-xs text-slate-500 line-clamp-2">{stripHtml(t.body)}</p>
+            </div>
+            <div className="flex items-center gap-2.5 shrink-0">
+              <button onClick={() => setEdit({ ...t })} title="Edit" className="text-slate-500 hover:text-white"><Pencil size={14} /></button>
+              <button onClick={() => removeTemplate(t.id)} title="Delete" className="text-slate-600 hover:text-red-400"><Trash2 size={14} /></button>
+            </div>
+          </Card>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function Team() {
+  const users = getUsers()
+  const [edit, setEdit] = useState(null) // user draft (with id = editing)
+  const [del, setDel] = useState(null)   // { user, reassignTo }
+  const saveUser = () => { if (!edit.name) return; if (edit.id) updateUser(edit.id, edit); else addUser(edit); setEdit(null) }
+  const confirmDelete = () => { removeUser(del.user.id, del.reassignTo || null); setDel(null) }
+
+  return (
+    <div className="space-y-5 max-w-3xl">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h1 className="font-display text-2xl font-bold text-white">Team <span className="text-slate-500 text-lg">({users.length})</span></h1>
+        <button onClick={() => setEdit({ name: '', email: '', role: 'sales', active: true })} className="flex items-center gap-1.5 rounded bg-brand px-3 py-1.5 text-xs font-semibold text-white"><UserPlus size={13} /> Add user</button>
+      </div>
+      <p className="text-xs text-slate-500">Manage who can sign in, what each role can do, and who owns every lead, quote, chat and document.</p>
+
+      {edit && (
+        <Card className="p-4 space-y-3 border-brand/40">
+          <div className="flex items-center justify-between"><span className="text-sm font-semibold text-white">{edit.id ? `Edit ${edit.name}` : 'Add team member'}</span><button onClick={() => setEdit(null)} className="text-slate-500 hover:text-white"><X size={16} /></button></div>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <Field label="Name" value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} placeholder="Jane Doe" />
+            <Field label="Email" type="email" value={edit.email} onChange={(e) => setEdit({ ...edit, email: e.target.value })} placeholder="jane@company.com" />
+          </div>
+          <div className="grid sm:grid-cols-2 gap-3 items-end">
+            <label className="block"><span className="mb-1 block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Role</span>
+              <select value={edit.role} onChange={(e) => setEdit({ ...edit, role: e.target.value })} className={selCls}>{Object.entries(ROLES).map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}</select>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300 pb-2"><input type="checkbox" checked={edit.active} onChange={(e) => setEdit({ ...edit, active: e.target.checked })} className="accent-brand" /> Active (can sign in)</label>
+          </div>
+          <div className="rounded-lg border border-white/8 bg-white/[0.02] p-2.5">
+            <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">{ROLES[edit.role]?.label} can</span>
+            <div className="mt-1.5 flex flex-wrap gap-1">{PERMISSIONS.map((p) => <span key={p.id} className={`rounded px-1.5 py-0.5 text-[10px] ${roleCan(edit.role, p.id) ? 'bg-emerald-500/15 text-emerald-300' : 'bg-white/5 text-slate-600 line-through'}`}>{p.label}</span>)}</div>
+          </div>
+          <div className="flex gap-2"><button onClick={saveUser} className="rounded bg-brand px-3 py-1.5 text-sm font-semibold text-white">Save</button><button onClick={() => setEdit(null)} className="rounded border border-white/15 px-3 py-1.5 text-sm text-slate-300">Cancel</button></div>
+        </Card>
+      )}
+
+      <Card className="overflow-hidden"><div className="divide-y divide-white/6">
+        {users.map((u) => (
+          <div key={u.id} className="flex items-center justify-between gap-3 p-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <Avatar id={u.id} size={38} />
+              <div className="min-w-0">
+                <div className="flex items-center gap-2"><span className="font-medium text-white truncate">{u.name}</span>{!u.active && <span className="rounded bg-white/8 px-1.5 py-0.5 text-[10px] uppercase text-slate-500">Inactive</span>}</div>
+                <div className="text-xs text-slate-500 truncate">{u.email}</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <span className="hidden sm:inline text-xs text-slate-500">{assignedCount(u.id)} assigned</span>
+              <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${ROLE_COLOR[u.role] || 'bg-white/8 text-slate-300'}`}>{ROLES[u.role]?.label || u.role}</span>
+              <button onClick={() => setEdit({ ...u })} title="Edit" className="text-slate-500 hover:text-white"><Pencil size={14} /></button>
+              <button onClick={() => setDel({ user: u, reassignTo: '' })} title="Remove" className="text-slate-600 hover:text-red-400"><Trash2 size={14} /></button>
+            </div>
+          </div>
+        ))}
+      </div></Card>
+
+      <div>
+        <h2 className="text-sm font-semibold text-white mb-3">Roles &amp; permissions</h2>
+        <div className="grid sm:grid-cols-2 gap-3">
+          {Object.entries(ROLES).map(([key, r]) => (
+            <Card key={key} className="p-4">
+              <div className="flex items-center gap-2 mb-1"><Shield size={14} className="text-brand" /><span className="font-semibold text-white">{r.label}</span><span className="text-xs text-slate-600">{users.filter((u) => u.role === key).length} {users.filter((u) => u.role === key).length === 1 ? 'person' : 'people'}</span></div>
+              <p className="text-xs text-slate-500 mb-2">{r.desc}</p>
+              <div className="flex flex-wrap gap-1">{PERMISSIONS.map((p) => <span key={p.id} className={`rounded px-1.5 py-0.5 text-[10px] ${r.perms.includes(p.id) ? 'bg-emerald-500/15 text-emerald-300' : 'bg-white/5 text-slate-600 line-through'}`}>{p.label}</span>)}</div>
+            </Card>
+          ))}
+        </div>
+      </div>
+
+      {del && (
+        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/60 p-4" onClick={() => setDel(null)}>
+          <div className="w-full max-w-md rounded-xl border border-white/10 bg-slate-900 p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-2"><AlertTriangle size={18} className="text-amber-400" /><h3 className="font-semibold text-white">Remove {del.user.name}?</h3></div>
+            <p className="text-sm text-slate-400 mb-4">
+              {assignedCount(del.user.id) > 0
+                ? <><span className="font-semibold text-white">{assignedCount(del.user.id)}</span> record{assignedCount(del.user.id) === 1 ? ' is' : 's are'} assigned to them. Choose who takes over — everything is reassigned automatically.</>
+                : 'They have no assigned work. This removes their access.'}
+            </p>
+            {assignedCount(del.user.id) > 0 && (
+              <label className="block mb-4"><span className="mb-1 block text-[11px] font-semibold uppercase tracking-widest text-slate-500">Reassign their work to</span>
+                <select value={del.reassignTo} onChange={(e) => setDel({ ...del, reassignTo: e.target.value })} className={selCls}>
+                  <option value="">Leave unassigned</option>
+                  {users.filter((u) => u.id !== del.user.id).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
+              </label>
+            )}
+            <div className="flex justify-end gap-2"><button onClick={() => setDel(null)} className="rounded border border-white/15 px-3 py-1.5 text-sm text-slate-300">Cancel</button><button onClick={confirmDelete} className="rounded bg-red-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-red-500">Remove &amp; reassign</button></div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
