@@ -1,0 +1,3 @@
+# Personal, machine-local Claude Code settings — never commit (keeps research
+# domains and other local overrides out of any public repo).
+settings.local.json

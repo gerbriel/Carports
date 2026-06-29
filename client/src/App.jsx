@@ -1,0 +1,100 @@
+import { useEffect, lazy, Suspense } from 'react'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { HelmetProvider } from 'react-helmet-async'
+import Navbar from './components/layout/Navbar'
+import Footer from './components/layout/Footer'
+import ChatwootWidget from './components/ui/ChatwootWidget'
+import Home from './pages/Home'
+import ServicesPage from './pages/ServicesPage'
+import AboutPage from './pages/AboutPage'
+import ContactPage from './pages/ContactPage'
+import BlogListPage from './pages/BlogListPage'
+import BlogPostPage from './pages/BlogPostPage'
+import MetalCarportsPage from './pages/services/MetalCarportsPage'
+import MetalGaragesPage from './pages/services/MetalGaragesPage'
+import RVCoversPage from './pages/services/RVCoversPage'
+import AgriculturalPage from './pages/services/AgriculturalPage'
+import BoatStoragePage from './pages/services/BoatStoragePage'
+import LocationsPage from './pages/LocationsPage'
+import CityPage from './pages/CityPage'
+
+// Lazy-load the 3D builder so Three.js (~800KB) is only fetched when needed
+const BuilderPage = lazy(() => import('./pages/BuilderPage'))
+
+function ScrollToTop() {
+  const { pathname } = useLocation()
+  useEffect(() => { window.scrollTo(0, 0) }, [pathname])
+  return null
+}
+
+// Marketing site layout (Navbar + Footer). Mounted under the catch-all route so
+// it never renders on /builder — which keeps the builder full-screen and avoids a
+// second top-level <Routes> matching nothing.
+function SiteLayout() {
+  return (
+    <>
+      <Navbar />
+      <main>
+        <Routes>
+          <Route path="/" element={<Home />} />
+
+          {/* Services overview */}
+          <Route path="/services" element={<ServicesPage />} />
+
+          {/* Service sub-pages */}
+          <Route path="/services/metal-carports" element={<MetalCarportsPage />} />
+          <Route path="/services/metal-garages" element={<MetalGaragesPage />} />
+          <Route path="/services/rv-covers" element={<RVCoversPage />} />
+          <Route path="/services/agricultural-buildings" element={<AgriculturalPage />} />
+          <Route path="/services/boat-storage" element={<BoatStoragePage />} />
+
+          {/* Locations / service areas */}
+          <Route path="/locations" element={<LocationsPage />} />
+          <Route path="/locations/:citySlug" element={<CityPage />} />
+
+          {/* Other pages */}
+          <Route path="/about" element={<AboutPage />} />
+          {/* "Book a Call" retired — send any old links to the contact / call-for-quote page */}
+          <Route path="/book" element={<Navigate to="/contact" replace />} />
+          <Route path="/contact" element={<ContactPage />} />
+
+          {/* Blog */}
+          <Route path="/blog" element={<BlogListPage />} />
+          <Route path="/blog/:slug" element={<BlogPostPage />} />
+        </Routes>
+      </main>
+      <Footer />
+    </>
+  )
+}
+
+export default function App() {
+  return (
+    <HelmetProvider>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <ScrollToTop />
+
+        <Routes>
+          {/* 3D Builder — full-screen, no Navbar/Footer overlay */}
+          <Route
+            path="/builder"
+            element={
+              <Suspense fallback={
+                <div className="fixed inset-0 z-[200] bg-slate-950 flex items-center justify-center">
+                  <div className="text-slate-400 text-sm">Loading 3D Builder…</div>
+                </div>
+              }>
+                <BuilderPage />
+              </Suspense>
+            }
+          />
+
+          {/* Everything else → marketing site layout */}
+          <Route path="/*" element={<SiteLayout />} />
+        </Routes>
+
+        <ChatwootWidget />
+      </BrowserRouter>
+    </HelmetProvider>
+  )
+}

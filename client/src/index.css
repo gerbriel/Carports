@@ -1,0 +1,122 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply font-sans text-slate-900 antialiased;
+  }
+
+  h1, h2, h3, h4 {
+    @apply font-display;
+  }
+}
+
+@layer components {
+  .container {
+    @apply mx-auto max-w-7xl px-4 sm:px-6 lg:px-8;
+  }
+
+  .section {
+    @apply py-20 lg:py-28;
+  }
+
+  .btn {
+    @apply inline-flex items-center gap-2 rounded font-sans font-semibold text-sm tracking-wide transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2;
+  }
+
+  .btn-primary {
+    @apply btn bg-accent px-6 py-3.5 text-white hover:bg-accent-dark focus:ring-accent;
+  }
+
+  .btn-primary-lg {
+    @apply btn bg-accent px-8 py-4 text-base text-white hover:bg-accent-dark focus:ring-accent;
+  }
+
+  .btn-outline {
+    @apply btn border border-brand px-6 py-3.5 text-brand hover:bg-brand hover:text-white focus:ring-brand;
+  }
+
+  .btn-outline-white {
+    @apply btn border border-white/30 px-8 py-4 text-base text-white hover:border-white/60 hover:bg-white/10 focus:ring-white;
+  }
+
+  .btn-ghost-dark {
+    @apply btn bg-white/10 px-6 py-3.5 text-white hover:bg-white/20 focus:ring-white;
+  }
+
+  .section-label {
+    @apply inline-block mb-3 font-sans text-xs font-semibold uppercase tracking-[0.15em] text-brand;
+  }
+
+  .section-label-light {
+    @apply inline-block mb-3 font-sans text-xs font-semibold uppercase tracking-[0.15em] text-brand-light;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .fade-up {
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+
+  .fade-up.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── Light mode overrides ─────────────────────────────────────────────────────
+   Scoped to .light-theme wrapper (BuilderPage root). Outside @layer so these
+   win over Tailwind utilities without needing !important everywhere.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Backgrounds */
+.light-theme .bg-slate-950 { background-color: #ffffff; }
+.light-theme .bg-slate-900 { background-color: #f1f5f9; }
+.light-theme .bg-slate-800 { background-color: #e2e8f0; }
+.light-theme .bg-slate-700 { background-color: #cbd5e1; }
+
+/* Opacity-based overlays (white → dark equivalent) */
+.light-theme .bg-white\/8  { background-color: rgba(0,0,0,0.04); }
+.light-theme .bg-white\/10 { background-color: rgba(0,0,0,0.06); }
+.light-theme .bg-white\/20 { background-color: rgba(0,0,0,0.10); }
+
+/* Text */
+.light-theme .text-white   { color: #0f172a; }
+.light-theme .text-slate-200 { color: #1e293b; }
+.light-theme .text-slate-300 { color: #334155; }
+.light-theme .text-slate-400 { color: #64748b; }
+.light-theme .text-slate-500 { color: #94a3b8; }
+.light-theme .text-slate-600 { color: #94a3b8; }
+
+/* Borders */
+.light-theme .border-white\/8  { border-color: #e2e8f0; }
+.light-theme .border-white\/10 { border-color: #e2e8f0; }
+.light-theme .border-white\/20 { border-color: #cbd5e1; }
+.light-theme .border-white\/30 { border-color: #94a3b8; }
+.light-theme .border-white\/50 { border-color: #64748b; }
+
+/* Hover states */
+.light-theme .hover\:bg-white\/8:hover  { background-color: rgba(0,0,0,0.04); }
+.light-theme .hover\:bg-white\/20:hover { background-color: rgba(0,0,0,0.10); }
+.light-theme .hover\:text-white:hover   { color: #0f172a; }
+.light-theme .hover\:border-white\/50:hover { border-color: #64748b; }
+.light-theme .hover\:border-white\/60:hover { border-color: #475569; }
+
+/* Divider lines */
+.light-theme .bg-white\/10.mx-1 { background-color: #e2e8f0; }
+
+/* Brand elements always keep white text — rule placed after text-white override so it wins */
+.light-theme .bg-brand        { color: #ffffff; }
+.light-theme .bg-brand-dark   { color: #ffffff; }
+.light-theme .hover\:bg-brand-dark:hover { color: #ffffff; }

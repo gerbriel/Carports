@@ -1,0 +1,416 @@
+##############################################################################
+# Quality Metal Carports — Self-Hosted Services Stack
+#
+# Start everything:         docker compose up -d
+# Start individual tools:   docker compose --profile analytics up -d
+#
+# Profiles:
+#   (default)   — nginx reverse proxy + QMC reviews/leads server
+#   analytics   — Plausible CE (privacy-first analytics)
+#   booking     — Cal.com CE (appointment scheduling)
+#   crm         — Twenty CRM (lead management + Trello webhook)
+#   contracts   — Documenso (quotes, agreements, e-signatures)
+#   social      — Postiz (social media scheduling & management)
+#   support     — Chatwoot (live chat, customer support, quote threads)
+##############################################################################
+
+x-restart: &restart
+  restart: unless-stopped
+
+networks:
+  qmc-net:
+    driver: bridge
+
+volumes:
+  nginx-certs:
+  ghost-content:
+  postgres-main-data:
+  postgres-plausible-data:
+  clickhouse-data:
+  postgres-cal-data:
+  postgres-twenty-data:
+  postgres-documenso-data:
+  postgres-postiz-data:
+  postgres-chatwoot-data:
+  chatwoot-storage:
+  redis-data:
+  twenty-server-local-data:
+
+###############################################################################
+# NGINX REVERSE PROXY — routes traffic to all services
+###############################################################################
+services:
+  nginx:
+    image: nginx:alpine
+    <<: *restart
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./client/dist:/usr/share/nginx/html:ro
+      - nginx-certs:/etc/nginx/certs
+    depends_on:
+      - qmc-server
+    networks:
+      - qmc-net
+
+  ###############################################################################
+  # QMC SERVER — Google reviews proxy + lead intake to Twenty CRM
+  ###############################################################################
+  qmc-server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    <<: *restart
+    environment:
+      PORT: 4000
+      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY}
+      GOOGLE_PLACE_ID: ${GOOGLE_PLACE_ID}
+      TWENTY_API_URL: ${TWENTY_API_URL:-http://twenty-server:3000}
+      TWENTY_API_KEY: ${TWENTY_API_KEY}
+    networks:
+      - qmc-net
+
+  ###############################################################################
+  # PLAUSIBLE ANALYTICS — self-hosted, cookie-free alternative to Google Analytics
+  # Docs: https://github.com/plausible/community-edition
+  # Access: http://analytics.qualitymetalcarportsca.com
+  ###############################################################################
+  plausible:
+    image: ghcr.io/plausible/community-edition:v2
+    profiles: ["analytics"]
+    <<: *restart
+    command: sh -c "sleep 10 && /entrypoint.sh db createdb && /entrypoint.sh db migrate && /entrypoint.sh run"
+    environment:
+      BASE_URL: ${PLAUSIBLE_BASE_URL:-https://analytics.qualitymetalcarportsca.com}
+      SECRET_KEY_BASE: ${PLAUSIBLE_SECRET_KEY_BASE:?PLAUSIBLE_SECRET_KEY_BASE is required}
+      DATABASE_URL: postgres://plausible:${PLAUSIBLE_DB_PASSWORD:?required}@plausible-db:5432/plausible
+      CLICKHOUSE_DATABASE_URL: http://plausible-clickhouse:8123/plausible
+      MAILER_ADAPTER: Bamboo.LocalAdapter
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      - plausible-db
+      - plausible-clickhouse
+    networks:
+      - qmc-net
+
+  plausible-db:
+    image: postgres:16-alpine
+    profiles: ["analytics"]
+    <<: *restart
+    volumes:
+      - postgres-plausible-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: plausible
+      POSTGRES_USER: plausible
+      POSTGRES_PASSWORD: ${PLAUSIBLE_DB_PASSWORD:?required}
+    networks:
+      - qmc-net
+
+  plausible-clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    profiles: ["analytics"]
+    <<: *restart
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./config/clickhouse/clickhouse-config.xml:/etc/clickhouse-server/config.d/logging.xml:ro
+      - ./config/clickhouse/clickhouse-user-config.xml:/etc/clickhouse-server/users.d/logging.xml:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks:
+      - qmc-net
+
+  ###############################################################################
+  # CAL.COM CE — self-hosted booking & scheduling
+  # Docs: https://github.com/calcom/docker
+  # Access: https://book.qualitymetalcarportsca.com
+  ###############################################################################
+  cal:
+    image: calcom/cal.com:latest
+    profiles: ["booking"]
+    <<: *restart
+    environment:
+      DATABASE_URL: postgresql://cal:${CAL_DB_PASSWORD:?required}@cal-db:5432/cal
+      NEXTAUTH_SECRET: ${CAL_NEXTAUTH_SECRET:?required}
+      NEXTAUTH_URL: ${CAL_BASE_URL:-https://book.qualitymetalcarportsca.com}
+      NEXT_PUBLIC_WEBAPP_URL: ${CAL_BASE_URL:-https://book.qualitymetalcarportsca.com}
+      CALENDSO_ENCRYPTION_KEY: ${CAL_ENCRYPTION_KEY:?required}
+      EMAIL_FROM: noreply@qualitymetalcarportsca.com
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - cal-db
+    networks:
+      - qmc-net
+
+  cal-db:
+    image: postgres:16-alpine
+    profiles: ["booking"]
+    <<: *restart
+    volumes:
+      - postgres-cal-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: cal
+      POSTGRES_USER: cal
+      POSTGRES_PASSWORD: ${CAL_DB_PASSWORD:?required}
+    networks:
+      - qmc-net
+
+  ###############################################################################
+  # TWENTY CRM — open-source Salesforce alternative with Trello integration
+  # Docs: https://github.com/twentyhq/twenty
+  # Access: https://crm.qualitymetalcarportsca.com
+  # Trello: Add a Trello webhook in Twenty's workflow automation settings
+  ###############################################################################
+  twenty-server:
+    image: twentycrm/twenty:latest
+    profiles: ["crm"]
+    <<: *restart
+    environment:
+      PORT: 3000
+      PG_DATABASE_URL: postgres://twenty:${TWENTY_DB_PASSWORD:?required}@twenty-db:5432/twenty
+      REDIS_URL: redis://redis:6379
+      SERVER_URL: ${TWENTY_BASE_URL:-https://crm.qualitymetalcarportsca.com}
+      FRONT_BASE_URL: ${TWENTY_BASE_URL:-https://crm.qualitymetalcarportsca.com}
+      APP_SECRET: ${TWENTY_APP_SECRET:?required}
+      STORAGE_TYPE: local
+      STORAGE_LOCAL_PATH: /app/packages/twenty-server/.local-storage
+    ports:
+      - "127.0.0.1:3002:3000"
+    depends_on:
+      - twenty-db
+      - redis
+    volumes:
+      - twenty-server-local-data:/app/packages/twenty-server/.local-storage
+    networks:
+      - qmc-net
+
+  twenty-db:
+    image: postgres:16-alpine
+    profiles: ["crm"]
+    <<: *restart
+    volumes:
+      - postgres-twenty-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: twenty
+      POSTGRES_USER: twenty
+      POSTGRES_PASSWORD: ${TWENTY_DB_PASSWORD:?required}
+    networks:
+      - qmc-net
+
+  ###############################################################################
+  # DOCUMENSO — open-source DocuSign alternative for quotes & contracts
+  # Docs: https://github.com/documenso/documenso
+  # Access: https://docs.qualitymetalcarportsca.com
+  ###############################################################################
+  documenso:
+    image: documenso/documenso:latest
+    profiles: ["contracts"]
+    <<: *restart
+    environment:
+      NEXTAUTH_URL: ${DOCUMENSO_BASE_URL:-https://docs.qualitymetalcarportsca.com}
+      NEXTAUTH_SECRET: ${DOCUMENSO_NEXTAUTH_SECRET:?required}
+      DATABASE_URL: postgres://documenso:${DOCUMENSO_DB_PASSWORD:?required}@documenso-db:5432/documenso
+      NEXT_PUBLIC_WEBAPP_URL: ${DOCUMENSO_BASE_URL:-https://docs.qualitymetalcarportsca.com}
+      NEXT_PRIVATE_ENCRYPTION_KEY: ${DOCUMENSO_ENCRYPTION_KEY:?required}
+      NEXT_PRIVATE_ENCRYPTION_SECONDARY_KEY: ${DOCUMENSO_ENCRYPTION_KEY_2:?required}
+      NEXT_PRIVATE_SMTP_HOST: ${SMTP_HOST:-localhost}
+      NEXT_PRIVATE_SMTP_PORT: ${SMTP_PORT:-587}
+      NEXT_PRIVATE_SMTP_FROM_ADDRESS: noreply@qualitymetalcarportsca.com
+    ports:
+      - "127.0.0.1:3003:3000"
+    depends_on:
+      - documenso-db
+    networks:
+      - qmc-net
+
+  documenso-db:
+    image: postgres:16-alpine
+    profiles: ["contracts"]
+    <<: *restart
+    volumes:
+      - postgres-documenso-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: documenso
+      POSTGRES_USER: documenso
+      POSTGRES_PASSWORD: ${DOCUMENSO_DB_PASSWORD:?required}
+    networks:
+      - qmc-net
+
+  ###############################################################################
+  # POSTIZ — social media management & scheduling (Facebook, Instagram, etc.)
+  # Docs: https://github.com/gitroomhq/postiz-app
+  # Access: https://social.qualitymetalcarportsca.com
+  ###############################################################################
+  postiz:
+    image: ghcr.io/gitroomhq/postiz-app:latest
+    profiles: ["social"]
+    <<: *restart
+    environment:
+      DATABASE_URL: postgres://postiz:${POSTIZ_DB_PASSWORD:?required}@postiz-db:5432/postiz
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${POSTIZ_JWT_SECRET:?required}
+      FRONTEND_URL: ${POSTIZ_BASE_URL:-https://social.qualitymetalcarportsca.com}
+      NEXT_PUBLIC_BACKEND_URL: ${POSTIZ_BASE_URL:-https://social.qualitymetalcarportsca.com}/api
+      BACKEND_INTERNAL_URL: http://postiz:3000
+      STORAGE_PROVIDER: local
+      UPLOAD_DIRECTORY: /uploads
+      NEXT_PUBLIC_UPLOAD_STATIC_DIRECTORY: /uploads
+    ports:
+      - "127.0.0.1:3004:5000"
+    depends_on:
+      - postiz-db
+      - redis
+    networks:
+      - qmc-net
+
+  postiz-db:
+    image: postgres:16-alpine
+    profiles: ["social"]
+    <<: *restart
+    volumes:
+      - postgres-postiz-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: postiz
+      POSTGRES_USER: postiz
+      POSTGRES_PASSWORD: ${POSTIZ_DB_PASSWORD:?required}
+    networks:
+      - qmc-net
+
+  ###############################################################################
+  # CHATWOOT — live chat, customer support, quoting threads, post-install updates
+  # Docs: https://github.com/chatwoot/chatwoot
+  # Access: https://support.qualitymetalcarportsca.com
+  #
+  # After first boot:
+  #   1. Visit https://support.qualitymetalcarportsca.com and create your admin account
+  #   2. Settings > Inboxes > Add Inbox > Website
+  #   3. Copy the Website Token → set as VITE_CHATWOOT_WEBSITE_TOKEN in .env
+  #   4. Rebuild the React client: cd client && npm run build
+  #
+  # Use Chatwoot for:
+  #   - Live chat widget on the public site
+  #   - Inbound quote requests (share conversation links with customers)
+  #   - Post-installation check-ins and support tickets
+  #   - WhatsApp / Facebook / Email channel consolidation
+  ###############################################################################
+  chatwoot-rails:
+    image: chatwoot/chatwoot:latest
+    profiles: ["support"]
+    <<: *restart
+    command: bundle exec rails s -p 3000 -b 0.0.0.0
+    environment:
+      RAILS_ENV: production
+      SECRET_KEY_BASE: ${CHATWOOT_SECRET_KEY_BASE:?required}
+      FRONTEND_URL: ${CHATWOOT_BASE_URL:-https://support.qualitymetalcarportsca.com}
+      DATABASE_URL: postgres://chatwoot:${CHATWOOT_DB_PASSWORD:?required}@chatwoot-db:5432/chatwoot
+      REDIS_URL: redis://redis:6379
+      ACTIVE_STORAGE_SERVICE: local
+      RAILS_LOG_TO_STDOUT: "true"
+      RAILS_SERVE_STATIC_FILES: "true"
+      MAILER_SENDER_EMAIL: support@qualitymetalcarportsca.com
+      SMTP_ADDRESS: ${SMTP_HOST:-smtp.example.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USER}
+      SMTP_PASSWORD: ${SMTP_PASS}
+      SMTP_AUTHENTICATION: plain
+      SMTP_ENABLE_STARTTLS_AUTO: "true"
+    volumes:
+      - chatwoot-storage:/app/storage
+    ports:
+      - "127.0.0.1:3005:3000"
+    depends_on:
+      - chatwoot-db
+      - redis
+    networks:
+      - qmc-net
+
+  chatwoot-sidekiq:
+    image: chatwoot/chatwoot:latest
+    profiles: ["support"]
+    <<: *restart
+    command: bundle exec sidekiq -C config/sidekiq.yml
+    environment:
+      RAILS_ENV: production
+      SECRET_KEY_BASE: ${CHATWOOT_SECRET_KEY_BASE:?required}
+      FRONTEND_URL: ${CHATWOOT_BASE_URL:-https://support.qualitymetalcarportsca.com}
+      DATABASE_URL: postgres://chatwoot:${CHATWOOT_DB_PASSWORD:?required}@chatwoot-db:5432/chatwoot
+      REDIS_URL: redis://redis:6379
+      ACTIVE_STORAGE_SERVICE: local
+      MAILER_SENDER_EMAIL: support@qualitymetalcarportsca.com
+      SMTP_ADDRESS: ${SMTP_HOST:-smtp.example.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USER}
+      SMTP_PASSWORD: ${SMTP_PASS}
+      SMTP_AUTHENTICATION: plain
+      SMTP_ENABLE_STARTTLS_AUTO: "true"
+    volumes:
+      - chatwoot-storage:/app/storage
+    depends_on:
+      - chatwoot-db
+      - redis
+    networks:
+      - qmc-net
+
+  chatwoot-db:
+    image: postgres:16-alpine
+    profiles: ["support"]
+    <<: *restart
+    volumes:
+      - postgres-chatwoot-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: chatwoot
+      POSTGRES_USER: chatwoot
+      POSTGRES_PASSWORD: ${CHATWOOT_DB_PASSWORD:?required}
+    networks:
+      - qmc-net
+
+  ###############################################################################
+  # GHOST CMS — blog management (write posts in Ghost admin → served on website)
+  # Docs: https://ghost.org/docs/install/docker/
+  # Admin panel: https://blog.qualitymetalcarportsca.com/ghost
+  #
+  # After setup:
+  #   1. Visit https://blog.qualitymetalcarportsca.com/ghost and create admin account
+  #   2. Settings > Integrations > Add custom integration
+  #   3. Copy the Content API Key → set VITE_GHOST_CONTENT_KEY in .env
+  #   4. Rebuild the React client: cd client && npm run build
+  ###############################################################################
+  ghost:
+    image: ghost:5-alpine
+    profiles: ["blog"]
+    <<: *restart
+    environment:
+      NODE_ENV: production
+      url: ${GHOST_BASE_URL:-https://blog.qualitymetalcarportsca.com}
+      database__client: sqlite3
+      database__connection__filename: /var/lib/ghost/content/data/ghost.db
+      mail__transport: SMTP
+      mail__from: noreply@qualitymetalcarportsca.com
+      mail__options__host: ${SMTP_HOST:-smtp.example.com}
+      mail__options__port: ${SMTP_PORT:-587}
+      mail__options__auth__user: ${SMTP_USER}
+      mail__options__auth__pass: ${SMTP_PASS}
+    volumes:
+      - ghost-content:/var/lib/ghost/content
+    ports:
+      - "127.0.0.1:2368:2368"
+    networks:
+      - qmc-net
+
+  ###############################################################################
+  # SHARED REDIS — used by Twenty CRM, Postiz, and Chatwoot
+  ###############################################################################
+  redis:
+    image: redis:7-alpine
+    profiles: ["crm", "social", "support"]
+    <<: *restart
+    volumes:
+      - redis-data:/data
+    networks:
+      - qmc-net
