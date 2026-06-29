@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Search, X, MapPin, Wrench, FileText, Newspaper, Box, CornerDownLeft } from 'lucide-react'
 import { SEARCH_ENTRIES, TYPE_ORDER } from '../../data/searchIndex'
-import { useGhostPosts } from '../../hooks/useGhostPosts'
+import { BLOG_POSTS } from '../../data/blogPosts'
 
 const TYPE_META = {
   Page: { icon: FileText, label: 'Page' },
@@ -28,23 +28,20 @@ export default function GlobalSearch({ onClose }) {
   const [active, setActive] = useState(0)
   const inputRef = useRef(null)
   const listRef = useRef(null)
-  const { posts } = useGhostPosts({ limit: 50 })
 
-  // Live, navigable blog posts become searchable entries (placeholders are skipped).
+  // Bundled blog posts become searchable entries.
   const blogEntries = useMemo(
     () =>
-      (posts || [])
-        .filter((p) => p.slug && p.slug !== '#')
-        .map((p, i) => ({
-          id: `Article-${i}`,
-          type: 'Article',
-          title: p.title,
-          subtitle: p.tags?.[0]?.name || 'Article',
-          path: `/blog/${p.slug}`,
-          _title: (p.title || '').toLowerCase(),
-          _hay: `${p.title || ''} ${p.excerpt || ''} ${(p.tags || []).map((t) => t.name).join(' ')}`.toLowerCase(),
-        })),
-    [posts],
+      BLOG_POSTS.map((p, i) => ({
+        id: `Article-${i}`,
+        type: 'Article',
+        title: p.title,
+        subtitle: p.tags?.[0]?.name || 'Article',
+        path: `/blog/${p.slug}`,
+        _title: (p.title || '').toLowerCase(),
+        _hay: `${p.title || ''} ${p.excerpt || ''} ${(p.tags || []).map((t) => t.name).join(' ')}`.toLowerCase(),
+      })),
+    [],
   )
 
   const all = useMemo(() => [...SEARCH_ENTRIES, ...blogEntries], [blogEntries])

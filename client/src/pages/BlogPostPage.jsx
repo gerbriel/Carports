@@ -2,21 +2,13 @@ import { useParams, Link } from 'react-router-dom'
 import { Calendar, Clock, Tag, ArrowLeft, ArrowRight } from 'lucide-react'
 import SEOHead from '../components/ui/SEOHead'
 import FadeIn from '../components/ui/FadeIn'
-import { useGhostPost } from '../hooks/useGhostPosts'
+import { getPostBySlug } from '../data/blogPosts'
 
 export default function BlogPostPage() {
   const { slug } = useParams()
-  const { post, loading, error } = useGhostPost(slug)
+  const post = getPostBySlug(slug)
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-white pt-32 flex items-center justify-center">
-        <div className="text-sm text-slate-400">Loading...</div>
-      </div>
-    )
-  }
-
-  if (error || !post) {
+  if (!post) {
     return (
       <div className="min-h-screen bg-white pt-32">
         <div className="container text-center py-20">
@@ -34,12 +26,17 @@ export default function BlogPostPage() {
     month: 'long', day: 'numeric', year: 'numeric',
   })
 
+  // Images are self-hosted under public/blog/; prefix the app base path (and swap
+  // the %BASE% token used inside the post HTML).
+  const featureUrl = post.feature_image ? `${import.meta.env.BASE_URL}${post.feature_image}` : ''
+  const bodyHtml = (post.html || '').replace(/%BASE%/g, import.meta.env.BASE_URL)
+
   const articleSchema = {
     '@context': 'https://schema.org',
     '@type': 'Article',
     headline: post.title,
     description: post.excerpt || '',
-    image: post.feature_image || '',
+    image: featureUrl,
     datePublished: post.published_at,
     dateModified: post.updated_at || post.published_at,
     author: {
@@ -60,7 +57,7 @@ export default function BlogPostPage() {
         title={post.title}
         description={post.excerpt || post.title}
         canonical={`/blog/${slug}`}
-        image={post.feature_image}
+        image={featureUrl}
         schemas={[articleSchema]}
         breadcrumbs={[
           { label: 'Blog', path: '/blog' },
@@ -73,7 +70,7 @@ export default function BlogPostPage() {
         {post.feature_image && (
           <div className="h-56 sm:h-72 lg:h-[400px] overflow-hidden bg-slate-100">
             <img
-              src={post.feature_image}
+              src={featureUrl}
               alt={post.title}
               className="w-full h-full object-cover"
               loading="eager"
@@ -119,11 +116,11 @@ export default function BlogPostPage() {
             </div>
           </FadeIn>
 
-          {/* Body — Ghost outputs HTML */}
+          {/* Body — imported HTML from the legacy site (cleaned) */}
           <FadeIn delay={100}>
             <div
               className="prose prose-slate prose-sm sm:prose max-w-none prose-headings:font-display prose-headings:font-bold prose-a:text-brand prose-a:no-underline hover:prose-a:underline prose-img:rounded-lg"
-              dangerouslySetInnerHTML={{ __html: post.html }}
+              dangerouslySetInnerHTML={{ __html: bodyHtml }}
             />
           </FadeIn>
 
