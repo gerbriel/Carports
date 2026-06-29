@@ -1,7 +1,9 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Phone, Mail, MapPin, Clock, CheckCircle, Send } from 'lucide-react'
 import FadeIn from '../components/ui/FadeIn'
 import { identifyChatwootVisitor, setChatwootConversationLabel } from '../components/ui/ChatwootWidget'
+import { addLead, addQuote } from '../data/adminData'
 
 const STRUCTURE_TYPES = [
   'Metal Carport',
@@ -20,6 +22,9 @@ const CONTACT_ITEMS = [
 ]
 
 export default function ContactPage() {
+  const [params] = useSearchParams()
+  const config = params.get('config') || ''
+  const price = params.get('price') ? Number(params.get('price')) : null
   const [form, setForm] = useState({ firstName: '', lastName: '', email: '', phone: '', structureType: '', message: '' })
   const [status, setStatus] = useState('idle')
 
@@ -29,11 +34,15 @@ export default function ContactPage() {
     e.preventDefault()
     setStatus('sending')
 
+    // Capture for the admin dashboard (plug-and-play; swap for your backend later).
+    addLead({ ...form, ...(config ? { config, price } : {}) })
+    if (config) addQuote({ name: `${form.firstName} ${form.lastName}`.trim(), email: form.email, config, price })
+
     try {
       const res = await fetch('/api/leads', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, config, price }),
       })
       setStatus(res.ok ? 'success' : 'error')
     } catch {

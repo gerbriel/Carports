@@ -4,6 +4,7 @@ import { HelmetProvider } from 'react-helmet-async'
 import Navbar from './components/layout/Navbar'
 import Footer from './components/layout/Footer'
 import ChatwootWidget from './components/ui/ChatwootWidget'
+import DemoWidget from './components/ui/DemoWidget'
 import Home from './pages/Home'
 import ServicesPage from './pages/ServicesPage'
 import AboutPage from './pages/AboutPage'
@@ -20,6 +21,8 @@ import CityPage from './pages/CityPage'
 
 // Lazy-load the 3D builder so Three.js (~800KB) is only fetched when needed
 const BuilderPage = lazy(() => import('./pages/BuilderPage'))
+// Admin demo dashboard — lazy so normal visitors never download it
+const AdminDemoPage = lazy(() => import('./pages/AdminDemoPage'))
 
 function ScrollToTop() {
   const { pathname } = useLocation()
@@ -64,6 +67,7 @@ function SiteLayout() {
         </Routes>
       </main>
       <Footer />
+      <DemoWidget />
     </>
   )
 }
@@ -88,6 +92,20 @@ export default function App() {
                 </div>
               }>
                 <BuilderPage />
+              </Suspense>
+            }
+          />
+
+          {/* Admin demo dashboard — full-screen, no Navbar/Footer */}
+          <Route
+            path="/admin"
+            element={
+              <Suspense fallback={
+                <div className="fixed inset-0 z-[200] bg-slate-950 flex items-center justify-center">
+                  <div className="text-slate-400 text-sm">Loading admin…</div>
+                </div>
+              }>
+                <AdminDemoPage />
               </Suspense>
             }
           />

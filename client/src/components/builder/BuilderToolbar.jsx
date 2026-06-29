@@ -20,6 +20,7 @@ function MoonIcon() {
 }
 import { calculatePrice } from '../../data/pricing'
 import { BUILDING_TYPES } from '../../data/builderData'
+import { addDesign } from '../../data/adminData'
 
 export default function BuilderToolbar() {
   const store       = useBuilderStore()
@@ -153,6 +154,13 @@ export default function BuilderToolbar() {
         </div>
         <Link
           to={`/contact?config=${encodeURIComponent(`${store.width}×${store.length}×${store.height}ft – ${buildingLabel}`)}&price=${pricing.subtotal}`}
+          onClick={() => addDesign({
+            name: buildingLabel,
+            config: `${store.width}×${store.length}×${store.height}ft – ${buildingLabel}`,
+            price: pricing.subtotal,
+            width: store.width, length: store.length, height: store.height,
+            roofStyle: buildingLabel,
+          })}
           className="rounded-lg bg-brand px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-white hover:bg-brand-dark transition-colors whitespace-nowrap"
         >
           <span className="sm:hidden">Quote</span><span className="hidden sm:inline">Get Formal Quote</span>
