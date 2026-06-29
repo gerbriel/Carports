@@ -1,0 +1,68 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Allow the workflow to publish to Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deploy at a time; let an in-progress one finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install
+        working-directory: client
+        run: npm ci
+
+      - name: Build (Pages base path)
+        working-directory: client
+        env:
+          BASE_PATH: /Carports/
+        run: npm run build
+
+      - name: SPA deep-link fallback + disable Jekyll
+        working-directory: client
+        run: |
+          cp dist/index.html dist/404.html
+          touch dist/.nojekyll
+
+      # Cheap safety check for direct pushes to main (PRs are covered by ci.yml).
+      - name: Syntax-check server
+        run: |
+          node --check server/index.js
+          node --check server/lib/reviews.js
+          node --check server/scripts/add-review.mjs
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: client/dist
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

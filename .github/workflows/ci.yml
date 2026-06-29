@@ -1,9 +1,9 @@
 name: CI
 
+# Validates pull requests. Pushes to main are built + checked by deploy-pages.yml.
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref.
 concurrency:
