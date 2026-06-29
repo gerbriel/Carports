@@ -51,7 +51,11 @@ jobs:
           node --check server/lib/reviews.js
           node --check server/scripts/add-review.mjs
 
+      # enablement: true turns on Pages (Actions source) automatically on the
+      # first run, so no manual repo-settings step is needed.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: client/dist
