@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Layers, Camera, RotateCcw, Ruler, Grid3x3, Tag, Car, Share2, Check, Send, Save } from 'lucide-react'
+import { Layers, Camera, RotateCcw, Ruler, Grid3x3, Tag, Car, Share2, Check, Send, Save, Box } from 'lucide-react'
 import { useBuilderStore } from '../../store/builderStore'
 
 function SunIcon() {
@@ -155,13 +155,22 @@ export default function BuilderToolbar() {
           <Tag size={13} /> Parts
         </button>
 
-        {/* Scale-reference vehicles menu */}
+        {/* Diagnostic / exploded "how it's built" view */}
+        <button
+          onClick={() => store.setField('diagnosticMode', !store.diagnosticMode)}
+          className={`${btnBase} ${store.diagnosticMode ? btnActive : btnIdle}`}
+          title="Diagnostic view: explode the building into labeled components, click a part to inspect it"
+        >
+          <Box size={13} /> Diagnostic
+        </button>
+
+        {/* Scale-reference vehicles + landscaping menu */}
         <button
           onClick={() => store.setField('showVehicles', !store.showVehicles)}
           className={`${btnBase} ${store.showVehicles ? btnActive : btnIdle}`}
-          title="Place scale-reference vehicles to visualize space"
+          title="Place scale-reference vehicles and landscaping to visualize space"
         >
-          <Car size={13} /> Vehicles
+          <Car size={13} /> Vehicles & Landscaping
         </button>
 
         <div className="w-px h-4 bg-white/10 mx-1" />

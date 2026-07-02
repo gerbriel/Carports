@@ -7,6 +7,10 @@ import { frameSpan } from './BuildingTrusses'
 import { flatBasis } from './Skylight'
 import { useBuilderStore } from '../../../store/builderStore'
 import { panelFinish, DOOR_TYPES } from '../../../data/builderData'
+import { useExplode } from './useExplode'
+import { pieceExplode } from '../../../data/explode'
+import { Inspectable } from './pieceInspectCore'
+import { getPanelSchedule } from '../../../data/panelSchedule'
 
 const WALL_CLAD = 0.13   // panels sit this far outboard of the frame (matches CLAD)
 
@@ -133,29 +137,253 @@ function wallPanelGeo(w, h, cx, cy, wallW, wallH) {
   return g
 }
 
+// Rake-cut end-wall panel: a quad (pentagon if it straddles the ridge) whose TOP
+// follows the sloped roofline, so in NORMAL view no rectangular "excess" (the rake
+// offcut) pokes above the roof. Verts in wall-local X [-w/2, w/2] with ABSOLUTE Y;
+// UVs map to the wall texture (u across wallW, v across topH) so the ribs stay aligned.
+function rakeCutPanelGeo(w, yBottom, topL, topR, yPeak, cx, wallW, topH) {
+  const hwp = w / 2
+  const shape = new THREE.Shape()
+  shape.moveTo(-hwp, yBottom)
+  shape.lineTo(hwp, yBottom)
+  shape.lineTo(hwp, topR)
+  if (yPeak != null) shape.lineTo(0, yPeak)   // ridge strip: peak in the middle
+  shape.lineTo(-hwp, topL)
+  shape.closePath()
+  const g = new THREE.ShapeGeometry(shape)
+  const uv = g.attributes.uv, pos = g.attributes.position
+  for (let i = 0; i < uv.count; i++) {
+    uv.setX(i, (cx + pos.getX(i) + wallW / 2) / wallW)
+    uv.setY(i, pos.getY(i) / topH)
+  }
+  uv.needsUpdate = true
+  return g
+}
+
+// Split one wall region (w wide, centred at cx) into individual ~3′ metal panels.
+// Returns [{ w, cx }] sub-panels covering the region; `spread` (feet per unit of
+// local X from the wall centre) is added in the caller to fan each sheet apart in
+// the exploded view. 1 panel when the region is ≤ ~3′ (or not exploding).
+function panelStrips(w, cx, split) {
+  if (!split || w <= 3.5) return [{ w, cx }]
+  const n = Math.max(1, Math.round(w / 3))
+  const pw = w / n
+  const left = cx - w / 2
+  return Array.from({ length: n }, (_, i) => ({ w: pw, cx: left + pw * (i + 0.5) }))
+}
+
+// HORIZONTAL siding: split one wall region (h tall, centred at cy) into individual
+// ~3′-tall COURSES, each spanning the FULL region width. Returns [{ h, cy }] bottom-
+// up so the courses stack up the wall; `spread` fans them apart vertically in the
+// exploded view (added in the caller). 1 course when the region is ≤ ~3′ (or not
+// exploding). `courseFloor` is the region's bottom Y in wall-space so each course's
+// absolute height (from the ground) can be turned into a bottom-up schedule index.
+function panelCourses(h, cy, split, courseFloor = cy - h / 2) {
+  if (!split || h <= 3.5) return [{ h, cy, floor: courseFloor }]
+  const n = Math.max(1, Math.round(h / 3))
+  const ph = h / n
+  return Array.from({ length: n }, (_, i) => ({ h: ph, cy: courseFloor + ph * (i + 0.5), floor: courseFloor }))
+}
+
+// ── End-wall (gable) panel strips ──────────────────────────────────────────────
+// A-frame END walls are sheeted with individual ~3′-wide VERTICAL panels, each a
+// SINGLE piece running FLOOR (or the clad-band bottom) up to the TOP CHORD (sloped
+// roofline) at that panel's x. The panels themselves STEP UP to the peak and back
+// down — they ARE the gable; there is NO separate triangle piece above.
+//
+// Top-chord height at wall-local x (same taper the trusses use): `height` at the
+// eave corners (x=±hw) rising linearly to `ridgeH` at the ridge (x=0). We add
+// GABLE_LIFT so the panel top meets the LIFTED roof skin (hides the top chords),
+// matching the old GableMesh peak (ridgeH + GABLE_LIFT). Always split into 3′
+// panels (the sheets step) regardless of explode; `spread` only fans them apart.
+//
+//   yBottom   — clad-band bottom (0 for fully-closed; band[0] for top-N/fractional)
+//   doorTops  — [{ x0, x1, yTop }] header lines an opening imposes; a strip whose
+//               span overlaps an opening stops at that header (like the sheets show
+//               for a middle door), matching wallSegments' above-opening panel.
+function endWallStrips(wallW, yBottom, ridgeH, height, doorTops = []) {
+  const hw = wallW / 2
+  const rise = ridgeH - height
+  const topChordAt = (x) => height + Math.max(0, rise) * (1 - Math.min(1, Math.abs(x) / (hw || 1))) + GABLE_LIFT
+  const n = Math.max(1, Math.round(wallW / 3))
+  const pw = wallW / n
+  return Array.from({ length: n }, (_, i) => {
+    const cx = -hw + pw * (i + 0.5)
+    const xL = -hw + pw * i
+    const xR = -hw + pw * (i + 1)
+    const straddles = xL <= 0 && xR >= 0
+    const innerX = straddles ? 0 : Math.min(Math.abs(xL), Math.abs(xR))
+    // Roofline heights: the two edges + the peak (ridge strip) define the RAKE-CUT
+    // top (normal view); the TALLEST across the span (yTopRect) is the full ordered
+    // rectangle shown in Diagnostic (the piece before it's rake-cut → the "excess").
+    let topL = topChordAt(xL)
+    let topR = topChordAt(xR)
+    let yPeak = straddles ? topChordAt(0) : null
+    let yTopRect = topChordAt(innerX)
+    // An opening under this strip cuts every top flat at the header (panel above door).
+    for (const d of doorTops) {
+      if (cx > d.x0 && cx < d.x1) {
+        topL = Math.min(topL, d.yTop); topR = Math.min(topR, d.yTop)
+        yTopRect = Math.min(yTopRect, d.yTop)
+        if (yPeak != null) yPeak = Math.min(yPeak, d.yTop)
+      }
+    }
+    return { w: pw, cx, panelNo: i + 1, yBottom, yTopRect, topL, topR, yPeak }
+  })
+}
+
+// Per-panel hover label: pull THIS strip's exact length from the panel schedule
+// (matched by sheeting order i), falling back to a generic index. `sideLabel` is a
+// display prefix ("End Wall"/"Side Wall"/"Wall"). id = the catalog `wall:<side>`
+// instance (what wallsEnd/wallsSide + hiddenInstances key on).
+function panelLabel(schedPanels, i, sideLabel) {
+  const p = schedPanels?.[i]
+  if (p?.lengthLabel) return `${sideLabel} panel ${i + 1} · ${p.lengthLabel}`
+  return `${sideLabel} panel ${i + 1}`
+}
+
+// HORIZONTAL siding hover label: a COURSE (one horizontal panel spanning the full
+// wall run). getPanelSchedule returns horizontal walls as bottom-up courses whose
+// `lengthLabel` = the wall run; match this course to schedule course `courseNo`
+// (1-based, bottom-up) by order → e.g. "Side Wall course 2 · 30'".
+function courseLabel(schedPanels, courseNo, sideLabel) {
+  const p = schedPanels?.[courseNo - 1]
+  if (p?.lengthLabel) return `${sideLabel} course ${courseNo} · ${p.lengthLabel}`
+  return `${sideLabel} course ${courseNo}`
+}
+
 // ── Partial panel ──────────────────────────────────────────────────────────────
 // anchor 'top'    → panel hangs from the eave down (top-N' styles)
 // anchor 'bottom' → panel rises from the ground up (fractional closures)
-function PartialPanel({ wallW, wallH, fraction, anchor = 'top', color, texMap, wireframe }) {
+// VERTICAL siding → the clad band splits into ~3′-wide vertical strips. HORIZONTAL
+// siding → the band splits into ~3′-tall COURSES spanning the full run. The schedule
+// counts courses over the CLAD BAND height (not the full wall), so a course's index
+// is measured from the BAND's own bottom (bandY0) → course 1 = the band's lowest.
+function PartialPanel({ wallW, wallH, fraction, anchor = 'top', color, texMap, wireframe, split = false, spread = 0, wallKey, sideLabel, schedPanels, isVertical = true }) {
   const panelH = wallH * fraction
   const cy = anchor === 'bottom' ? panelH / 2 : wallH - panelH / 2
-  const geo = useMemo(() => wallPanelGeo(wallW, panelH, 0, cy, wallW, wallH), [wallW, panelH, cy, wallH])
+  const bandY0 = cy - panelH / 2   // the clad band's own floor (courses index up from here)
+  const pieces = useMemo(() => {
+    if (isVertical) {
+      return panelStrips(wallW, 0, split).map((s) => ({
+        cx: s.cx, cy, along: s.cx, vertical: true,
+        geo: wallPanelGeo(s.w, panelH, s.cx, cy, wallW, wallH),
+      }))
+    }
+    return panelCourses(panelH, cy, split, bandY0).map((c) => ({
+      cx: 0, cy: c.cy, along: c.cy, vertical: false,
+      courseNo: Math.max(1, Math.round((c.floor - bandY0) / 3) + 1),   // bottom-up within the band
+      geo: wallPanelGeo(wallW, c.h, 0, c.cy, wallW, wallH),
+    }))
+  }, [wallW, panelH, cy, wallH, split, isVertical, bandY0])
   return (
-    <PanelMesh position={[0, cy, 0]} geometry={geo} color={color} texMap={texMap} wireframe={wireframe} castShadow receiveShadow />
+    <>
+      {pieces.map((s, i) => {
+        const px = s.vertical ? s.cx + s.cx * spread : 0
+        const py = s.vertical ? cy : s.cy + (s.cy - bandY0 - panelH / 2) * spread
+        const label = s.vertical
+          ? panelLabel(schedPanels, i, sideLabel)
+          : courseLabel(schedPanels, s.courseNo, sideLabel)
+        return (
+          <Inspectable key={i} id={`wall:${wallKey}`} label={label} at={[px, py, 0]}>
+            <PanelMesh position={[px, py, 0]} geometry={s.geo} color={color} texMap={texMap} wireframe={wireframe} castShadow receiveShadow />
+          </Inspectable>
+        )
+      })}
+    </>
+  )
+}
+
+// ── End-wall gable: floor-to-top-chord strips (the panels ARE the gable) ───────
+// Each ~3′ vertical strip runs from the clad-band bottom up to the sloped top
+// chord at its x — stepping up to the peak and back down. NO separate triangle.
+// Openings cut a strip off at the header (panel above the door). Per-panel hover
+// shows THAT panel's exact length from the schedule (matched by sheeting order).
+function EndWallGable({ wallW, wallH, ridgeH, yBottom = 0, doors = [], color, texMap, wireframe, spread = 0, wallKey, sideLabel, schedPanels }) {
+  // Normal view: panels are RAKE-CUT to the roofline (no excess). Diagnostic view:
+  // the full ordered rectangle shows (so you can see the cut-off piece + its length).
+  const diag = useBuilderStore((s) => s.diagnosticMode)
+  // Header lines that clip a strip: a wall opening (door/window) whose top is below
+  // the top chord leaves only the panel-above-header, like the sheets' middle door.
+  const doorTops = useMemo(() => doors.map((d) => {
+    const posX  = (d.xOffset - 0.5) * wallW
+    const isWin = d.type === 'window'
+    const cyc   = isWin && d.yOffset != null ? d.yOffset * wallH : d.height / 2
+    return { x0: posX - d.width / 2, x1: posX + d.width / 2, yTop: Math.max(0, cyc + d.height / 2) }
+  }), [doors, wallW, wallH])
+
+  const topH = ridgeH + GABLE_LIFT   // peak height — shared v-scale so ribs align
+  const strips = useMemo(
+    () => endWallStrips(wallW, yBottom, ridgeH, wallH, doorTops)
+      .filter((s) => s.yTopRect - s.yBottom > 1e-3)
+      .map((s) => {
+        const h  = s.yTopRect - s.yBottom
+        const cy = s.yBottom + h / 2
+        // Diagnostic: full ordered rectangle (its flat top shows the rake offcut).
+        // Normal: rake-cut to the roofline (no excess above the roof).
+        const geo = diag
+          ? wallPanelGeo(s.w, h, s.cx, cy, wallW, topH)
+          : rakeCutPanelGeo(s.w, s.yBottom, s.topL, s.topR, s.yPeak, s.cx, wallW, topH)
+        return { ...s, cy, geo }
+      }),
+    [wallW, wallH, ridgeH, yBottom, doorTops, topH, diag],
+  )
+  return (
+    <>
+      {strips.map((s, i) => {
+        const px = s.cx + s.cx * spread
+        // Diagnostic rect geo is centred at cy; rake-cut geo bakes ABSOLUTE Y (pos 0).
+        return (
+          <Inspectable key={i} id={`wall:${wallKey}`} label={panelLabel(schedPanels, s.panelNo - 1, sideLabel)} at={[px, s.cy, 0]}>
+            <PanelMesh position={diag ? [px, s.cy, 0] : [px, 0, 0]} geometry={s.geo} color={color} texMap={texMap} wireframe={wireframe} castShadow receiveShadow />
+          </Inspectable>
+        )
+      })}
+    </>
   )
 }
 
 // ── Full wall with door cutouts ───────────────────────────────────────────────
-function FullWallSegments({ wallW, wallH, doors, color, texMap, wireframe }) {
-  const segs = useMemo(
-    () => wallSegments(wallW, wallH, doors).map((s) => ({ pos: [s.cx, s.cy, 0], geo: wallPanelGeo(s.w, s.h, s.cx, s.cy, wallW, wallH) })),
-    [wallW, wallH, doors],
-  )
+// VERTICAL siding → each door-cut segment splits into ~3′-wide vertical strips
+// (panelStrips), fanned apart horizontally on explode. HORIZONTAL siding → each
+// segment splits into ~3′-tall COURSES spanning the segment's full width
+// (panelCourses), fanned apart vertically on explode. A course's schedule index is
+// bottom-up from the ground (round(floorY / 3)) so it maps to getPanelSchedule's
+// bottom-up courses even when a door cutout only leaves an above/below strip.
+function FullWallSegments({ wallW, wallH, doors, color, texMap, wireframe, split = false, spread = 0, wallKey, sideLabel, schedPanels, isVertical = true }) {
+  const pieces = useMemo(() => {
+    if (isVertical) {
+      return wallSegments(wallW, wallH, doors).flatMap((s) =>
+        panelStrips(s.w, s.cx, split).map((p) => ({
+          cx: p.cx, cy: s.cy, along: p.cx,
+          label: null,   // vertical uses positional index (assigned below)
+          geo: wallPanelGeo(p.w, s.h, p.cx, s.cy, wallW, wallH),
+        })))
+    }
+    // HORIZONTAL: split each segment into full-width horizontal courses (bottom-up),
+    // tagging each with its ground-relative course number for the schedule lookup.
+    return wallSegments(wallW, wallH, doors).flatMap((s) =>
+      panelCourses(s.h, s.cy, split, s.cy - s.h / 2).map((c) => ({
+        cx: s.cx, cy: c.cy, along: c.cy,
+        courseNo: Math.max(1, Math.round(c.floor / 3) + 1),   // bottom-up course index (0 → course 1)
+        geo: wallPanelGeo(s.w, c.h, s.cx, c.cy, wallW, wallH),
+      })))
+  }, [wallW, wallH, doors, split, isVertical])
   return (
     <>
-      {segs.map((s, i) => (
-        <PanelMesh key={i} position={s.pos} geometry={s.geo} color={color} texMap={texMap} wireframe={wireframe} castShadow receiveShadow />
-      ))}
+      {pieces.map((s, i) => {
+        // Vertical strips fan out along X (× cx); horizontal courses fan up along Y.
+        const px = isVertical ? s.cx + s.cx * spread : s.cx
+        const py = isVertical ? s.cy : s.cy + (s.cy - wallH / 2) * spread
+        const label = isVertical
+          ? panelLabel(schedPanels, i, sideLabel)
+          : courseLabel(schedPanels, s.courseNo, sideLabel)
+        return (
+          <Inspectable key={i} id={`wall:${wallKey}`} label={label} at={[px, py, 0]}>
+            <PanelMesh position={[px, py, 0]} geometry={s.geo} color={color} texMap={texMap} wireframe={wireframe} castShadow receiveShadow />
+          </Inspectable>
+        )
+      })}
     </>
   )
 }
@@ -535,7 +763,8 @@ function OpeningsLayer({ wallKey, wallW, wallH, doors, legOffsets = [] }) {
 function WallFace({
   wallW, wallH, ridgeH, style, isEndWall, wallKey, doors, legOffsets = [],
   color, wireframe, isVertical, roofStyle, panelProfile = 'l5',
-  wainscotEnabled, wainscotColor, wainscotWalls,
+  wainscotEnabled, wainscotColor, wainscotWalls, split = false, spread = 0,
+  schedPanels = [],
 }) {
   const openings = <OpeningsLayer wallKey={wallKey} wallW={wallW} wallH={wallH} doors={doors} legOffsets={legOffsets} />
 
@@ -550,13 +779,24 @@ function WallFace({
 
   if (style === 'open') return openings
 
-  const showGable = isEndWall
+  // VERTICAL end walls (front/back A-frame) are sheeted with individual floor-to-
+  // top-chord strips that THEMSELVES form the gable — no separate triangle piece.
+  // Horizontal end walls (regular / a_frame_horizontal) still use a gable infill
+  // above the horizontal courses (panels don't run up the rake there).
+  const gableFromPanels = isEndWall && isVertical
+  const showGable = isEndWall && !gableFromPanels
+  const sideLabel = isEndWall ? 'End Wall' : 'Side Wall'
+  // Common props for the end-wall gable strips.
+  const gableProps = { wallW, wallH, ridgeH, color, texMap, wireframe, spread, wallKey, sideLabel, schedPanels }
 
   const FIXED_FT = { top_3: 3, top_4: 4, top_5: 5, top_6: 6 }
   if (FIXED_FT[style] !== undefined) {
+    const band = Math.min(FIXED_FT[style], wallH)
     return (
       <>
-        <PartialPanel wallW={wallW} wallH={wallH} fraction={Math.min(FIXED_FT[style], wallH) / wallH} color={color} texMap={texMap} wireframe={wireframe} />
+        {gableFromPanels
+          ? <EndWallGable {...gableProps} yBottom={wallH - band} doors={doors} />
+          : <PartialPanel wallW={wallW} wallH={wallH} fraction={band / wallH} color={color} texMap={texMap} wireframe={wireframe} split={split} spread={spread} wallKey={wallKey} sideLabel={sideLabel} schedPanels={schedPanels} isVertical={isVertical} />}
         {showGable && <GableMesh wallW={wallW} wallH={wallH} ridgeH={ridgeH} color={color} texMap={gableTexMap} wireframe={wireframe} roofStyle={roofStyle} />}
         {openings}
       </>
@@ -568,7 +808,9 @@ function WallFace({
     return (
       <>
         {/* Fractional closures hang from the eave DOWN (top-anchored) */}
-        <PartialPanel wallW={wallW} wallH={wallH} fraction={FRACTIONS[style]} anchor="top" color={color} texMap={texMap} wireframe={wireframe} />
+        {gableFromPanels
+          ? <EndWallGable {...gableProps} yBottom={wallH * (1 - FRACTIONS[style])} doors={doors} />
+          : <PartialPanel wallW={wallW} wallH={wallH} fraction={FRACTIONS[style]} anchor="top" color={color} texMap={texMap} wireframe={wireframe} split={split} spread={spread} wallKey={wallKey} sideLabel={sideLabel} schedPanels={schedPanels} isVertical={isVertical} />}
         {showGable && <GableMesh wallW={wallW} wallH={wallH} ridgeH={ridgeH} color={color} texMap={gableTexMap} wireframe={wireframe} roofStyle={roofStyle} />}
         {openings}
       </>
@@ -583,7 +825,12 @@ function WallFace({
 
   return (
     <>
-      <FullWallSegments wallW={wallW} wallH={wallH} doors={doors} color={color} texMap={texMap} wireframe={wireframe} />
+      {gableFromPanels
+        // END WALL (vertical A-frame): floor-to-top-chord strips that FORM the gable
+        // (no separate triangle) — each a different length, stepping to the peak.
+        ? <EndWallGable {...gableProps} yBottom={0} doors={doors} />
+        // SIDE WALL / horizontal: vertical strips OR horizontal courses (door cutouts).
+        : <FullWallSegments wallW={wallW} wallH={wallH} doors={doors} color={color} texMap={texMap} wireframe={wireframe} split={split} spread={spread} wallKey={wallKey} sideLabel={sideLabel} schedPanels={schedPanels} isVertical={isVertical} />}
       {showWainscot && (
         // Wainscot = the bottom 3′ band, SAME corrugated panel profile/texture as
         // the wall (ribs line up via wall-relative UVs) but its own color, sitting a
@@ -601,7 +848,19 @@ function WallFace({
 export default function BuildingWalls({
   width, length, height, walls, doors, ridgeHeight, roofStyle, color, wireframe,
   wainscotEnabled, wainscotColor, wainscotWalls, wallOrientation, frameSpacing = 5, endPostSpacing = 5, panelProfile = 'l5',
+  hiddenInstances = {},
 }) {
+  // Per-instance: 'wall:<side>' hides one wall's panel skin.
+  const hidden = (side) => hiddenInstances[`wall:${side}`] === true
+  // Per-piece explode: each wall flies out radially + lifts to the 'skin' layer
+  // (world offset on the wall group), and its panels fan apart within the wall
+  // (local `spread`). amount 0 → offset [0,0,0] and no split (assembled unchanged).
+  const { active: exploding, amount, maxDim } = useExplode()
+  const wallOff = (anchorX, anchorZ) =>
+    exploding ? pieceExplode([anchorX, 0, anchorZ], 'skin', amount, maxDim) : [0, 0, 0]
+  // Fan factor for panels WITHIN a wall (feet of extra separation per foot of
+  // local-X distance from the wall centre). Scales with amount + building size.
+  const spread = exploding ? 0.5 * amount * Math.max(1, maxDim / 26) : 0
   const hw = width / 2
   const hl = length / 2
   // Panels sit just OUTBOARD of the frame so legs / trusses / knee braces / base
@@ -633,29 +892,50 @@ export default function BuildingWalls({
 
   const wainscotHex = wainscotColor?.hex
 
+  // Per-panel LENGTHS for hover come from the SAME schedule the BOM uses. Build a
+  // { side → panels[] } map keyed by 'wall:<side>'; each panel row carries its exact
+  // `lengthLabel` (e.g. "17'0½\""). Matched to a rendered strip by sheeting order.
+  const roofPitch = useBuilderStore((s) => s.roofPitch)
+  const schedBySide = useMemo(() => {
+    const map = { front: [], back: [], left: [], right: [] }
+    try {
+      const sched = getPanelSchedule({ width, length, height, roofPitch, roofStyle, walls, wallOrientation })
+      for (const entry of sched?.walls ?? []) if (entry?.side) map[entry.side] = entry.panels ?? []
+    } catch { /* schedule optional — hover still shows the generic panel index */ }
+    return map
+  }, [width, length, height, roofPitch, roofStyle, walls, wallOrientation])
+
   const commonProps = { color, wireframe, isVertical, roofStyle, panelProfile, wainscotEnabled, wainscotColor: wainscotHex, wainscotWalls }
 
   return (
     <group>
       {/* Front end wall */}
-      <group position={[0, 0, -hlC]}>
-        <WallFace wallW={width} wallH={height} ridgeH={ridgeHeight} style={walls.front} isEndWall wallKey="front" doors={frontDoors} legOffsets={endSnaps} {...commonProps} />
-      </group>
+      {!hidden('front') && (() => { const o = wallOff(0, -hlC); return (
+        <group position={[o[0], o[1], -hlC + o[2]]}>
+          <WallFace wallW={width} wallH={height} ridgeH={ridgeHeight} style={walls.front} isEndWall wallKey="front" doors={frontDoors} legOffsets={endSnaps} split={exploding} spread={spread} schedPanels={schedBySide.front} {...commonProps} />
+        </group>
+      ) })()}
 
       {/* Back end wall */}
-      <group position={[0, 0, hlC]} rotation={[0, Math.PI, 0]}>
-        <WallFace wallW={width} wallH={height} ridgeH={ridgeHeight} style={walls.back} isEndWall wallKey="back" doors={backDoors} legOffsets={endSnaps} {...commonProps} />
-      </group>
+      {!hidden('back') && (() => { const o = wallOff(0, hlC); return (
+        <group position={[o[0], o[1], hlC + o[2]]} rotation={[0, Math.PI, 0]}>
+          <WallFace wallW={width} wallH={height} ridgeH={ridgeHeight} style={walls.back} isEndWall wallKey="back" doors={backDoors} legOffsets={endSnaps} split={exploding} spread={spread} schedPanels={schedBySide.back} {...commonProps} />
+        </group>
+      ) })()}
 
       {/* Left side wall */}
-      <group position={[-hwC, 0, 0]} rotation={[0, Math.PI / 2, 0]}>
-        <WallFace wallW={length} wallH={height} ridgeH={ridgeHeight} style={walls.left} isEndWall={false} wallKey="left" doors={leftDoors} legOffsets={sideSnaps} {...commonProps} />
-      </group>
+      {!hidden('left') && (() => { const o = wallOff(-hwC, 0); return (
+        <group position={[-hwC + o[0], o[1], o[2]]} rotation={[0, Math.PI / 2, 0]}>
+          <WallFace wallW={length} wallH={height} ridgeH={ridgeHeight} style={walls.left} isEndWall={false} wallKey="left" doors={leftDoors} legOffsets={sideSnaps} split={exploding} spread={spread} schedPanels={schedBySide.left} {...commonProps} />
+        </group>
+      ) })()}
 
       {/* Right side wall */}
-      <group position={[hwC, 0, 0]} rotation={[0, -Math.PI / 2, 0]}>
-        <WallFace wallW={length} wallH={height} ridgeH={ridgeHeight} style={walls.right} isEndWall={false} wallKey="right" doors={rightDoors} legOffsets={sideSnaps} {...commonProps} />
-      </group>
+      {!hidden('right') && (() => { const o = wallOff(hwC, 0); return (
+        <group position={[hwC + o[0], o[1], o[2]]} rotation={[0, -Math.PI / 2, 0]}>
+          <WallFace wallW={length} wallH={height} ridgeH={ridgeHeight} style={walls.right} isEndWall={false} wallKey="right" doors={rightDoors} legOffsets={sideSnaps} split={exploding} spread={spread} schedPanels={schedBySide.right} {...commonProps} />
+        </group>
+      ) })()}
     </group>
   )
 }

@@ -4,6 +4,8 @@ import { cloneForRoof, getVertTex } from './corrugatedTexture'
 import { TRUSS_OH, GABLE_OH, roofLift } from './BuildingTrusses'
 import { panelFinish } from '../../../data/builderData'
 import { flatBasis, curvedBasis } from './Skylight'
+import { useExplode, pieceOffset } from './useExplode'
+import { Inspectable } from './pieceInspectCore'
 
 const MAT_PROPS = { roughness: 0.52, metalness: 0.38 }
 // Painted roof panels have a washcoat backer — the underside reads off-white.
@@ -12,17 +14,17 @@ const ROOF_INTERIOR = '#ece9dd'
 // A roof skin surface. The exterior (top) face is the BackSide on these
 // geometries; painted panels get the off-white washcoat liner on the underside
 // (FrontSide). Galvalume is bare metal both sides (single double-sided mesh).
-function RoofSkin({ geometry, texMap, color, castShadow, receiveShadow = true }) {
+function RoofSkin({ geometry, texMap, color, castShadow, receiveShadow = true, position }) {
   // Galvalume → polished bare-metal (chrome); painted colors → matte.
   const finish = panelFinish(color)
   const ext = finish ? { side: THREE.DoubleSide, ...finish } : { side: THREE.BackSide }
   return (
     <>
-      <mesh geometry={geometry} castShadow={castShadow} receiveShadow={receiveShadow}>
+      <mesh geometry={geometry} position={position} castShadow={castShadow} receiveShadow={receiveShadow}>
         <meshStandardMaterial color={color} map={texMap ?? null} {...MAT_PROPS} {...ext} />
       </mesh>
       {!finish && (
-        <mesh geometry={geometry} receiveShadow={receiveShadow}>
+        <mesh geometry={geometry} position={position} receiveShadow={receiveShadow}>
           <meshStandardMaterial color={ROOF_INTERIOR} map={texMap ?? null} side={THREE.FrontSide} roughness={0.72} metalness={0.08} />
         </mesh>
       )}
@@ -104,38 +106,44 @@ function regularRoofProfile(hw, height, ridgeHeight, lift = 0) {
 // from a smooth curve through the bow control points, then a ribbon of quads is
 // built from eave to eave so the skin follows (hugs) the trusses and curls down
 // at both eaves.
-function RegularRoof({ hw, hl, height, ridgeHeight, color, length, panelProfile = 'l5' }) {
-  const geo = useMemo(() => {
+function RegularRoof({ hw, hl, height, ridgeHeight, color, length, panelProfile = 'l5', off }) {
+  const { active, amount, maxDim } = useExplode()
+  // Regular sheets run FRONT-TO-BACK and step ACROSS the arc; split the shell into
+  // arc-wise strips so each 3′ course fans out. When NOT exploding, render the
+  // original single shell (byte-identical geometry) — no extra draw calls.
+  const geos = useMemo(() => {
     const profile = regularRoofProfile(hw, height, ridgeHeight, REGULAR_LIFT)
     const curve   = new THREE.CatmullRomCurve3(
       profile.map(([x, y]) => new THREE.Vector3(x, y, 0)),
       false, 'centripetal', 0.5,
     )
     const samples = curve.getPoints(96)        // cross-section points
-    // Regular / standard roofs have NO gable overhang — the skin stops at the end
-    // walls (only the A-frame styles overhang front/back by GABLE_OH).
-    const z0 = -hl
-    const z1 =  hl
-    const pos = []
-    const uv  = []
-    const n   = samples.length - 1
-    for (let i = 0; i < n; i++) {
-      const p = samples[i]
-      const q = samples[i + 1]
-      const u0 = i / n
-      const u1 = (i + 1) / n
-      // two triangles for the quad (p,z0)-(q,z0)-(q,z1)-(p,z1)
-      pos.push(p.x, p.y, z0,  q.x, q.y, z0,  q.x, q.y, z1)
-      pos.push(p.x, p.y, z0,  q.x, q.y, z1,  p.x, p.y, z1)
-      uv.push(u0, 0,  u1, 0,  u1, 1)
-      uv.push(u0, 0,  u1, 1,  u0, 1)
+    const z0 = -hl, z1 = hl                    // no gable overhang on regular roofs
+    const nSeg = samples.length - 1
+    // How many arc courses (3′ coverage). 1 strip = the original single mesh.
+    const arcLen = curve.getLength()
+    const nStrip = active ? Math.max(1, Math.round(arcLen / 3)) : 1
+    const out = []
+    for (let s = 0; s < nStrip; s++) {
+      const i0 = Math.round((s / nStrip) * nSeg)
+      const i1 = Math.round(((s + 1) / nStrip) * nSeg)
+      const pos = [], uv = [], cen = [0, 0, 0]; let cnt = 0
+      for (let i = i0; i < i1; i++) {
+        const p = samples[i], q = samples[i + 1]
+        const u0 = i / nSeg, u1 = (i + 1) / nSeg
+        pos.push(p.x, p.y, z0,  q.x, q.y, z0,  q.x, q.y, z1)
+        pos.push(p.x, p.y, z0,  q.x, q.y, z1,  p.x, p.y, z1)
+        uv.push(u0, 0,  u1, 0,  u1, 1,  u0, 0,  u1, 1,  u0, 1)
+        cen[0] += p.x + q.x; cen[1] += p.y + q.y; cnt += 1
+      }
+      const g = new THREE.BufferGeometry()
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
+      g.setAttribute('uv',       new THREE.BufferAttribute(new Float32Array(uv), 2))
+      g.computeVertexNormals()
+      out.push({ geo: g, cen: [cnt ? cen[0] / (2 * cnt) : 0, cnt ? cen[1] / (2 * cnt) : 0, 0] })
     }
-    const g = new THREE.BufferGeometry()
-    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
-    g.setAttribute('uv',       new THREE.BufferAttribute(new Float32Array(uv), 2))
-    g.computeVertexNormals()
-    return g
-  }, [hw, hl, height, ridgeHeight])
+    return out
+  }, [hw, hl, height, ridgeHeight, active, amount, maxDim])
 
   const tex = useMemo(
     () => {
@@ -148,11 +156,17 @@ function RegularRoof({ hw, hl, height, ridgeHeight, color, length, panelProfile 
     [hw, ridgeHeight, height, length, panelProfile]
   )
 
-  return <RoofSkin geometry={geo} texMap={tex} color={color} castShadow />
+  return (
+    <>
+      {geos.map((s, i) => (
+        <RoofSkin key={i} geometry={s.geo} texMap={tex} color={color} position={off(s.cen)} castShadow />
+      ))}
+    </>
+  )
 }
 
 // ── Flat quad mesh (A-Frame slopes) ──────────────────────────────────────────
-function QuadMesh({ pts, uvCoords, texMap, color }) {
+function QuadMesh({ pts, uvCoords, texMap, color, position }) {
   const geo = useMemo(() => {
     const [a, b, c, d] = pts
     const g = new THREE.BufferGeometry()
@@ -175,13 +189,58 @@ function QuadMesh({ pts, uvCoords, texMap, color }) {
     return g
   }, pts.flat())
 
-  return <RoofSkin geometry={geo} texMap={texMap} color={color} castShadow />
+  return <RoofSkin geometry={geo} texMap={texMap} color={color} position={position} castShadow />
+}
+
+// Linear blend between two [x,y,z] corners at parameter s∈[0,1].
+const lerp3 = (a, b, s) => [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s, a[2] + (b[2] - a[2]) * s]
+const lerp2 = (a, b, s) => [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s]
+
+// One A-frame slope quad [a,b,c,d] (same corner + UV order the single mesh used)
+// split into individual ~3′ metal panels along the a→b (and d→c) edges — the
+// gable-length direction, where the sheet seams already run. Each strip fans out
+// on its own in the exploded view; at amount 0 every strip sits exactly where the
+// single slope mesh did (surface pixel-identical).
+function SlopePanels({ pts, uvCoords, texMap, color, off }) {
+  const [a, b, c, d] = pts
+  const [ua, ub, uc, ud] = uvCoords
+  // Slice count from the true a→b length (≈ building length + overhangs), 3′/sheet.
+  const span = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2])
+  const n = Math.max(1, Math.round(span / 3))
+  const strips = []
+  for (let i = 0; i < n; i++) {
+    const s0 = i / n, s1 = (i + 1) / n
+    // Strip corners walk a→b on one edge and d→c on the other, preserving winding.
+    const p0 = lerp3(a, b, s0), p1 = lerp3(a, b, s1)
+    const p2 = lerp3(d, c, s1), p3 = lerp3(d, c, s0)
+    const q0 = lerp2(ua, ub, s0), q1 = lerp2(ua, ub, s1)
+    const q2 = lerp2(ud, uc, s1), q3 = lerp2(ud, uc, s0)
+    const cen = [(p0[0] + p1[0] + p2[0] + p3[0]) / 4, (p0[1] + p1[1] + p2[1] + p3[1]) / 4, (p0[2] + p1[2] + p2[2] + p3[2]) / 4]
+    const o = off(cen)
+    strips.push({ pts: [p0, p1, p2, p3], uv: [q0, q1, q2, q3], pos: o, tip: [cen[0] + o[0], cen[1] + o[1], cen[2] + o[2]] })
+  }
+  return (
+    <>
+      {strips.map((s, i) => (
+        <Inspectable key={i} id="roof" label={`Roof Panel ${i + 1}`} at={s.tip}>
+          <QuadMesh pts={s.pts} uvCoords={s.uv} texMap={texMap} color={color} position={s.pos} />
+        </Inspectable>
+      ))}
+    </>
+  )
 }
 
 // ── Root export ───────────────────────────────────────────────────────────────
 export default function BuildingRoof({
   width, length, height, roofStyle, ridgeHeight, color, panelProfile = 'l5',
+  hiddenInstances = {},
 }) {
+  // Per-instance visibility — ids mirror getPartInstances() 'roof:left'/'right'/'center'.
+  const hidden = (id) => hiddenInstances[id] === true
+  // Per-piece explode: in diagnostic EXPLODE mode each 3′ roof sheet fans out from
+  // the building centroid + lifts to the 'skin' layer. amount 0 → offset [0,0,0].
+  const { amount, maxDim } = useExplode()
+  const off = (c) => pieceOffset(c, 'skin', amount, maxDim)
   const hw = width / 2
   const hl = length / 2
   const rise      = ridgeHeight - height
@@ -207,27 +266,31 @@ export default function BuildingRoof({
   )
 
   if (roofStyle === 'regular') {
+    if (hidden('roof:center')) return null
     return (
-      <RegularRoof hw={hw} hl={hl} height={height} ridgeHeight={ridgeHeight} color={color} length={length} panelProfile={panelProfile} />
+      <RegularRoof hw={hw} hl={hl} height={height} ridgeHeight={ridgeHeight} color={color} length={length} panelProfile={panelProfile} off={off} />
     )
   }
 
+  // A-frame slopes — each is one flat quad (SAME corner + UV order the single mesh
+  // used). SlopePanels splits it into ~3′ sheets that fan out when exploding and
+  // reassemble to the exact same surface at amount 0.
   return (
     <group>
       {/* Left slope — outer edge overhangs the eave, ends overhang the gable GABLE_OH */}
-      <QuadMesh
-        pts={[[-ohX, ohY, hl + GABLE_OH], [-ohX, ohY, -hl - GABLE_OH], [0, ridgeY, -hl - GABLE_OH], [0, ridgeY, hl + GABLE_OH]]}
-        uvCoords={UV_LEFT}
-        texMap={roofTex}
-        color={color}
-      />
+      {!hidden('roof:left') && (
+        <SlopePanels
+          pts={[[-ohX, ohY, hl + GABLE_OH], [-ohX, ohY, -hl - GABLE_OH], [0, ridgeY, -hl - GABLE_OH], [0, ridgeY, hl + GABLE_OH]]}
+          uvCoords={UV_LEFT} texMap={roofTex} color={color} off={off}
+        />
+      )}
       {/* Right slope — outer edge overhangs the eave, ends overhang the gable GABLE_OH */}
-      <QuadMesh
-        pts={[[0, ridgeY, hl + GABLE_OH], [0, ridgeY, -hl - GABLE_OH], [ohX, ohY, -hl - GABLE_OH], [ohX, ohY, hl + GABLE_OH]]}
-        uvCoords={UV_RIGHT}
-        texMap={roofTex}
-        color={color}
-      />
+      {!hidden('roof:right') && (
+        <SlopePanels
+          pts={[[0, ridgeY, hl + GABLE_OH], [0, ridgeY, -hl - GABLE_OH], [ohX, ohY, -hl - GABLE_OH], [ohX, ohY, hl + GABLE_OH]]}
+          uvCoords={UV_RIGHT} texMap={roofTex} color={color} off={off}
+        />
+      )}
     </group>
   )
 }

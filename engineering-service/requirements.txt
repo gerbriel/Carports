@@ -1,0 +1,11 @@
+# Core POC service
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+
+# ── Production roadmap (uncomment as each stage lands) ──────────────────────────
+# PyNiteFEA==1.0.0        # 2D/3D frame FEM — replace the simple-beam member checks
+# sectionproperties==3.5  # arbitrary cold-formed section properties
+# pycufsm==0.1.4          # AISI S100 DSM (local + distortional buckling)
+# ezdxf==1.3.5            # generate DXF shop/permit drawings
+# reportlab==4.2.5        # PDF calc package for PE review/stamp

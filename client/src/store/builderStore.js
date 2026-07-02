@@ -105,6 +105,13 @@ export const useBuilderStore = create((set) => ({
   // Widespan (>30′) truss web style: 'sloping_flat' | 'fink' | 'warren'
   widespanTrussStyle: 'sloping_flat',
 
+  // Column style override: 'auto' | 'single' | 'double' | 'ladder' | 'zigzag'
+  legStyle: 'auto',
+
+  // Manual extra trusses ADDED beyond the load-driven (snow/wind) frame spacing.
+  // 0 = just the schedule; N = N additional frames (tightens spacing to fit them).
+  extraTrussCount: 0,
+
   // ── Add-ons ───────────────────────────────────────────────────────────────
   extraOptions: {
     // Anchors — gated by installation surface (see ANCHOR_OPTIONS_BY_SURFACE):
@@ -118,7 +125,7 @@ export const useBuilderStore = create((set) => ({
     titenHDScrew:        false,   // Titen HD screw (cement)
     concreteAnchor:      false,   // concrete wedge anchor (cement)
     weldedOnBrackets:    false,   // welded L-brackets (cement)
-    extraTrusses:        false,
+    extraPurlins:        false,
     gauge26PanelUpgrade: false,
     pbr26GaPanelUpgrade: false,
     coloredScrews:       false,
@@ -126,7 +133,8 @@ export const useBuilderStore = create((set) => ({
 
   // ── Install equipment the CUSTOMER provides ────────────────────────────────
   // null = use the size-based auto suggestion (installRequirements); a number is a
-  // manual override (also drives how many props are staged in the 3-D scene).
+  // manual override. QUOTE INFO ONLY — the rigs staged in the 3-D scene are
+  // strictly size-driven (see Building.jsx) and can't be added/removed here.
   scissorLiftCount:  null,
   telehandlerCount:  null,
 
@@ -168,8 +176,34 @@ export const useBuilderStore = create((set) => ({
   showAnchors:         false,      // per-post ground anchors (toggle view)
   isDraggingDoor:      false,
   isDark:              true,
-  requestCameraPreset: null,       // 'front' | 'back' | 'left' | 'right' | 'top' | 'interior' | 'default'
+  requestCameraPreset: null,       // 'front' | 'back' | 'left' | 'right' | 'top' | 'interior' | 'iso' | 'default'
   flyMode:             false,      // WASD + drag-to-look free-roam camera (disables OrbitControls + auto-reframe)
+  panMode:             false,      // hand tool: left-drag pans (instead of orbiting) until toggled off
+
+  // ── Diagnostic / exploded view ─────────────────────────────────────────────
+  // A "how it's built" mode: separates the building into its component LAYERS
+  // (foundation → frame → secondary steel → skin → trim), labels each with its
+  // number + name, and lets you click a part to inspect its spec + quantity.
+  diagnosticMode: false,           // master toggle (also drives labels + legend)
+  explodeAmount:  0,               // 0 = assembled, 1 = fully exploded (vertical pancake)
+  selectedPartId: null,            // catalog id of the clicked/inspected component
+  hoveredPartId:  null,            // catalog id hovered (3D or legend) → cross-highlight
+
+  // Floating diagnostic LABELS (the 3D callout chips) — SEPARATE from part
+  // visibility. labelsVisible = master on/off; hiddenLabels = per-part-id hides.
+  // A label shows iff labelsVisible && !hiddenLabels[id]. Independent of whether
+  // the part geometry is shown (componentVisibility / hiddenInstances).
+  labelsVisible: true,
+  hiddenLabels:  {},
+  toggleLabel: (id) =>
+    set((s) => {
+      const h = { ...s.hiddenLabels }
+      if (h[id]) delete h[id]; else h[id] = true
+      return { hiddenLabels: h }
+    }),
+  showAllLabels: () => set({ labelsVisible: true, hiddenLabels: {} }),
+  hideAllLabels: () => set({ labelsVisible: false }),
+  setLabelsVisible: (v) => set({ labelsVisible: v }),
 
   // ── Scene / background ────────────────────────────────────────────────────
   // The sky is always the Dawn HDRI (Poly Haven) — it doubles as the reflection
@@ -194,6 +228,7 @@ export const useBuilderStore = create((set) => ({
   // Where the configured building sits on the site (feet from the address point) + spin.
   buildingPlacement: { x: 0, z: 0, rotation: 0 },
   isDraggingBuilding: false,  // disables OrbitControls while dragging placement
+  rotatingBuilding:  false,   // free-rotate mode: building follows the mouse until placed
 
   // Per-prop placement overrides for the staged site equipment (truck/trailer,
   // telehandler, scissor lift). Keyed by prop id (e.g. 'telehandler-0'); absent →
@@ -213,6 +248,7 @@ export const useBuilderStore = create((set) => ({
     purlins:    true,   // roof purlins
     girts:      true,   // wall girts
     braces:     true,   // diagonal sway braces
+    gableBraces: true,  // gable brace [20] on partially-enclosed ends
     // Skin
     roof:       true,   // roof panels
     walls:      true,   // wall panels
@@ -262,6 +298,10 @@ export const useBuilderStore = create((set) => ({
 
   setEquipment: (id, updates) =>
     set((s) => ({ equipment: { ...s.equipment, [id]: { ...(s.equipment[id] || {}), ...updates } } })),
+  // Selecting equipment deselects vehicles/props (and vice versa), and cancels the
+  // building's free-rotate mode, so rotation always has exactly ONE target.
+  selectEquipment: (id) =>
+    set({ selectedEquipmentId: id, selectedVehicleId: null, selectedPropId: null, rotatingBuilding: false }),
   resetEquipment: (id) =>
     set((s) => { const e = { ...s.equipment }; delete e[id]; return { equipment: e } }),
 
@@ -274,15 +314,47 @@ export const useBuilderStore = create((set) => ({
         Object.keys(s.componentVisibility).map((k) => [k, value]),
       ),
       hiddenParts: value ? {} : s.hiddenParts,   // "Show all" also un-hides individuals
+      hiddenInstances: value ? {} : s.hiddenInstances,   // …and per-instance hides
     })),
 
-  // ── Per-INSTANCE show/hide ── e.g. { 'purlins#3': true } hides Roof Purlin 4.
+  // ── Per-INSTANCE show/hide (legacy scheme) ── e.g. { 'purlins#3': true } hides
+  // Roof Purlin 4. Kept for the purlin/girt/lean-to toggles that already ship it.
   hiddenParts: {},
   togglePart: (id) =>
     set((s) => {
       const h = { ...s.hiddenParts }
       if (h[id]) delete h[id]; else h[id] = true
       return { hiddenParts: h }
+    }),
+
+  // ── Granular per-INSTANCE visibility (new scheme) ──────────────────────────
+  // Map of stable instance id → true (hidden). Ids come from getPartInstances()
+  // in data/components.js and are mirrored 1:1 by the scene renderers, e.g.
+  //   'roof:3'  'leg:left:2'  'endpost:front:1'  'purlin:5'  'girt:front:2'
+  //   'frame:0'  'peakBrace:1'  'kneeBrace:0'  'eaveTrim:1'  'cornerTrim:2'
+  //   'wall:left:0'  'ridgeCap:0'
+  // An instance renders IFF its TYPE is visible (componentVisibility) AND its id
+  // is NOT in hiddenInstances. Empty map ⇒ everything shows (backward compatible).
+  hiddenInstances: {},
+  toggleInstance: (id) =>
+    set((s) => {
+      const h = { ...s.hiddenInstances }
+      if (h[id]) delete h[id]; else h[id] = true
+      return { hiddenInstances: h }
+    }),
+  setInstanceHidden: (id, hidden) =>
+    set((s) => {
+      const h = { ...s.hiddenInstances }
+      if (hidden) h[id] = true; else delete h[id]
+      return { hiddenInstances: h }
+    }),
+  // Hide/show every instance belonging to one type at once (drives the parent
+  // row's bulk toggle when expanded). ids = the type's instance id list.
+  setInstancesHidden: (ids, hidden) =>
+    set((s) => {
+      const h = { ...s.hiddenInstances }
+      for (const id of ids) { if (hidden) h[id] = true; else delete h[id] }
+      return { hiddenInstances: h }
     }),
 
   setWall: (side, style) =>
@@ -434,7 +506,7 @@ export const useBuilderStore = create((set) => ({
   placeDrawnProp: (type, x, z, rotation, length) =>
     set((s) => ({ landscaping: [...s.landscaping, { id: uid(), type, x, z, scale: 1, rotation, length }] })),
 
-  selectProp: (id) => set({ selectedPropId: id, selectedDoorId: null, selectedSkylightId: null, selectedVehicleId: null, placing: null }),
+  selectProp: (id) => set({ selectedPropId: id, selectedDoorId: null, selectedSkylightId: null, selectedVehicleId: null, selectedEquipmentId: null, rotatingBuilding: false, placing: null }),
 
   removeProp: (id) =>
     set((s) => ({
@@ -466,7 +538,7 @@ export const useBuilderStore = create((set) => ({
     }),
 
   selectVehicle: (id) =>
-    set({ selectedVehicleId: id, selectedPropId: null, selectedDoorId: null, selectedSkylightId: null, placing: null }),
+    set({ selectedVehicleId: id, selectedPropId: null, selectedDoorId: null, selectedSkylightId: null, selectedEquipmentId: null, rotatingBuilding: false, placing: null }),
 
   removeVehicle: (id) =>
     set((s) => ({

@@ -367,7 +367,7 @@ export default function BuildingFoundation({ width, length, structure, walls, su
 // building. This renders a simple slab pad over the lean-to footprint (the same
 // concrete / asphalt / gravel pour as the center build) plus an anchor at each
 // outer-eave post foot. 'ground' → no pad, anchors only (matches the main build).
-export function LeanToFoundation({ side, mainWidth, length, leanWidth, surface, anchorType, showAnchors = false }) {
+export function LeanToFoundation({ side, mainWidth, length, leanWidth, frameSpacing = 5, surface, anchorType, showAnchors = false }) {
   const hw = mainWidth / 2, hl = length / 2
   const isSide = side === 'left' || side === 'right'
   const slab = SLAB[surface]
@@ -380,7 +380,7 @@ export function LeanToFoundation({ side, mainWidth, length, leanWidth, surface, 
       const xOuter  = outSign * (hw + leanWidth)
       return {
         cx: (xInner + xOuter) / 2, cz: 0, sx: leanWidth, sz: length,
-        colPts: frameSpan(length).map((z) => ({ x: xOuter - outSign * (COL / 2), z, dir: [-outSign, 0] })),
+        colPts: frameSpan(length, frameSpacing).map((z) => ({ x: xOuter - outSign * (COL / 2), z, dir: [-outSign, 0] })),
       }
     }
     const outSign = side === 'front' ? -1 : 1
@@ -388,9 +388,9 @@ export function LeanToFoundation({ side, mainWidth, length, leanWidth, surface, 
     const zOuter  = outSign * (hl + leanWidth)
     return {
       cx: 0, cz: (zInner + zOuter) / 2, sx: mainWidth, sz: leanWidth,
-      colPts: frameSpan(mainWidth).map((x) => ({ x, z: zOuter - outSign * (COL / 2), dir: [0, -outSign] })),
+      colPts: frameSpan(mainWidth, frameSpacing).map((x) => ({ x, z: zOuter - outSign * (COL / 2), dir: [0, -outSign] })),
     }
-  }, [side, isSide, mainWidth, length, leanWidth, hw, hl])
+  }, [side, isSide, mainWidth, length, leanWidth, frameSpacing, hw, hl])
 
   // Apron past the footprint: concrete → 0.5′, asphalt/gravel use their margin.
   const margin = surface === 'concrete' ? 0.5 : (slab?.margin ?? 0.5)

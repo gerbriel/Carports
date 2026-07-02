@@ -1,6 +1,9 @@
 import { useMemo, createContext, useContext } from 'react'
 import * as THREE from 'three'
 import { isFullyClosed } from '../../../data/structural'
+import { useExplode } from './useExplode'
+import { pieceExplode } from '../../../data/explode'
+import { Inspectable } from './pieceInspectCore'
 
 // Bright galvanized silver — the steel frame (trusses, purlins, girts, base rail,
 // braces) reads as bare metallic steel. Kept light + moderate metalness so it
@@ -35,6 +38,72 @@ const HAT_FL    = (HAT_BASE - HAT_CROWN) / 2   // each brim flange
 const steelMat = new THREE.MeshStandardMaterial({
   color: STEEL, roughness: 0.45, metalness: 0.35,
 })
+
+// ── Per-MEMBER explode plumbing ───────────────────────────────────────────────
+// A truss/bent is drawn in its own local X-Y plane (member coords are 2-D; the
+// frame sits at world Z = `z`). To fan the INDIVIDUAL members apart (rafters,
+// chords, webs, king post, braces, ridge) instead of moving the whole frame as
+// one block, each member computes its OWN world midpoint and adds its own
+// pieceExplode offset. The frame's z + the live explode state flow through this
+// context so members don't re-read the store or re-thread props. At amount 0 the
+// offset is [0,0,0] → assembled state pixel-identical.
+const ExplodeCtx = createContext({ amount: 0, maxDim: 26, z: 0 })
+
+// Offset for a member whose local (in-plane) midpoint is [mx, my] on a frame at
+// world Z = z. Returns the [dx,dy,dz] to ADD to the member's assembled position.
+// Reads the surrounding frame's ExplodeCtx; [0,0,0] when not exploding.
+function useMemberOffset(mx, my) {
+  const { amount, maxDim, z } = useContext(ExplodeCtx)
+  if (!amount) return ZERO3M
+  return pieceExplode([mx, my, z], 'frame', amount, maxDim)
+}
+const ZERO3M = [0, 0, 0]
+
+// A placed square tube (eave saddle, spacer) that fans out on its own midpoint.
+function PlacedTube({ size, x = 0, y = 0 }) {
+  const [ox, oy, oz] = useMemberOffset(x, y)
+  return <TubeBox size={size} position={[x + ox, y + oy, oz]} />
+}
+
+// Reinforcing INSERT — a thinner 2¼″×12ga tube seated concentrically inside a host
+// member. Assembled (amount 0) it sits flush/hidden inside the host so the normal
+// view is unchanged; in the EXPLODED view it takes its own member offset PLUS an
+// extra pull-out along the host's own axis so it slides clear of the host and reads
+// as a separate piece. `a`,`b` are the host member's 2-D endpoints; `pull` is the
+// extra draw distance (ft, scaled by amount) along the member axis.
+const INSERT_M = 0.1875   // 2¼″ insert cross-section
+// `insId` = the per-instance id suffix (''|':l'|':r') so the scene can hide/hover
+// this insert independently (chordInsert:<frame><insId>).
+function MemberInsert({ a, b, size = INSERT_M, shrink = 0.5, pull = 1.4, insId = '' }) {
+  const wt = useContext(TubeWallContext)
+  const { amount, maxDim, z, fi, insHidden } = useContext(ExplodeCtx)
+  if (insHidden && insHidden(`chordInsert:${fi}${insId}`)) return null
+  const dx = b[0] - a[0], dy = b[1] - a[1]
+  const full = Math.hypot(dx, dy) || 1
+  const len  = Math.max(0.3, full * shrink)     // insert is shorter than its host
+  const ux = dx / full, uy = dy / full
+  const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2
+  // Base offset = this member's own explode offset; then pull further along the
+  // host axis so the insert emerges from the tube end (visible as a separate piece).
+  let ex = 0, ey = 0, ez = 0
+  if (amount) {
+    const [bx, by, bz] = pieceExplode([mx, my, z], 'frame', amount, maxDim)
+    const size2 = Math.max(1, maxDim / 26)
+    const draw  = pull * amount * size2
+    ex = bx + ux * draw; ey = by + uy * draw; ez = bz
+  }
+  return (
+    <Inspectable id="chordInserts" label="Chord Insert" at={[mx + ex, my + ey, ez]}>
+      <mesh
+        geometry={tubeGeo(len, size, 'x', wt)}
+        position={[mx + ex, my + ey, ez]}
+        rotation={[0, 0, Math.atan2(dy, dx)]}
+        material={steelMat}
+        castShadow
+      />
+    </Inspectable>
+  )
+}
 
 // ── Hollow square tube ────────────────────────────────────────────────────────
 // Legs, truss members and base rails read as OPEN-ENDED steel tube (you can see
@@ -93,15 +162,18 @@ export function frameSpan(span, maxSpacing = 5) {
 }
 
 // One straight member between two 2-D points (in the truss X-Y plane). Hollow tube.
+// Fans out on its OWN midpoint in exploded view (each rafter/chord/web separates).
 function Member({ a, b, size = M }) {
   const wt = useContext(TubeWallContext)
   const dx = b[0] - a[0]
   const dy = b[1] - a[1]
   const len = Math.hypot(dx, dy)
+  const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2
+  const [ox, oy, oz] = useMemberOffset(mx, my)
   return (
     <mesh
       geometry={tubeGeo(len, size, 'x', wt)}
-      position={[(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, 0]}
+      position={[mx + ox, my + oy, oz]}
       rotation={[0, 0, Math.atan2(dy, dx)]}
       material={steelMat}
       castShadow
@@ -125,9 +197,11 @@ function CChannel({ a, b, flip = false }) {
   const dy = b[1] - a[1]
   const len = Math.hypot(dx, dy)
   const s   = flip ? -1 : 1
+  const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2
+  const [ox, oy, oz] = useMemberOffset(mx, my)
   return (
     <group
-      position={[(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, 0]}
+      position={[mx + ox, my + oy, oz]}
       rotation={[0, 0, Math.atan2(dy, dx)]}
     >
       <mesh material={steelMat} castShadow><boxGeometry args={[len, CT, CW]} /></mesh>
@@ -143,18 +217,23 @@ function CChannel({ a, b, flip = false }) {
 function PeakGusset({ y }) {
   const PW = 4 / 12, PH = 6 / 12, PT = 0.03
   const cy = y - PH * 0.35                 // centre just below the apex over the joint
+  // Ride with the king post / peak so the gusset + A325 bolts stay on the joint
+  // when the frame explodes (both plates share the joint's one offset).
+  const [ox, oy, oz] = useMemberOffset(0, cy)
   return (
-    <>
+    <group position={[ox, oy, oz]}>
       <mesh position={[0, cy,  M / 2 + PT / 2]} material={steelMat} castShadow><boxGeometry args={[PW, PH, PT]} /></mesh>
       <mesh position={[0, cy, -(M / 2 + PT / 2)]} material={steelMat} castShadow><boxGeometry args={[PW, PH, PT]} /></mesh>
-    </>
+    </group>
   )
 }
 
 // 8′ connector sleeve over the bottom-chord FLAT center splice — a slightly larger
 // hollow tube the two chord ends slip into (per the peak detail). Centred on y.
+// Fans out on its own midpoint like every other member in exploded view.
 function ConnectorSleeve({ half, y }) {
-  return <TubeBox size={[2 * half, M * 1.35, M * 1.35]} position={[0, y, 0]} />
+  const [ox, oy, oz] = useMemberOffset(0, y)
+  return <TubeBox size={[2 * half, M * 1.35, M * 1.35]} position={[ox, y + oy, oz]} />
 }
 
 // Top chords for an A-frame bent. Each rafter runs from its eave OVER the ridge and
@@ -191,7 +270,7 @@ export function collarHalfX(width /* , hw */) {
 
 // ── A-Frame truss at one Z slice ──────────────────────────────────────────────
 // Two distinct truss regimes, taken straight from the QMC stamped "Carport Style
-// Metal Building Generics" plan sets (A&A Engineering, CBC 2025 / ASCE 7-22):
+// Metal Building Generics" plan sets (CBC 2025 / ASCE 7-22):
 //
 //   • Standard widths (≤30′) — "Frame Details / Peak Brace Details" sheets:
 //     just two roof beams (rafters) meeting at the ridge + a short PEAK BRACE
@@ -204,8 +283,23 @@ export function collarHalfX(width /* , hw */) {
 //     chord at eave height + king post + a fan of diagonal/vertical web struts
 //     (truss webs) whose density grows with span (webPanels).
 //
-// Both keep eave knee braces (the "heavy-duty brace" gusset, leg → rafter).
-function AFrameTruss({ width, height, ridgeHeight, z, webPanels = 2, widespan = false, legGap = 0, widespanStyle = 'fink' }) {
+// Both keep eave knee braces (the "heavy-duty brace" gusset, leg → rafter) —
+// EXCEPT the two END frames, which the end wall itself braces (kneeBraces={false}).
+function AFrameTruss({ width, height, ridgeHeight, z, webPanels = 2, widespan = false, legGap = 0, widespanStyle = 'fink', kneeBraces = true, frameIndex = 0, hiddenInstances }) {
+  // Per-MEMBER explode: each member below computes its own world midpoint (via the
+  // ExplodeCtx) and fans out on it, so the truss's rafters / chords / webs / king
+  // post / braces separate individually (not one baked block). The frame group
+  // stays at [0,0,z]; members add their own offset (0 when not exploding). `fi` +
+  // `insHidden` let chord/collar INSERTS hover + hide independently.
+  const { amount, maxDim } = useExplode()
+  const insHidden = hiddenInstances ? (id) => hiddenInstances[id] === true : null
+  const ctx = useMemo(() => ({ amount, maxDim, z, fi: frameIndex, insHidden }),
+    [amount, maxDim, z, frameIndex, insHidden])
+  const Frame = ({ children }) => (
+    <ExplodeCtx.Provider value={ctx}>
+      <group position={[0, 0, z]}>{children}</group>
+    </ExplodeCtx.Provider>
+  )
   const hw    = width / 2
   const rise  = ridgeHeight - height
   const pitch = Math.atan2(rise, hw)
@@ -229,20 +323,20 @@ function AFrameTruss({ width, height, ridgeHeight, z, webPanels = 2, widespan = 
   // INBOARD 1″ and DOWN 1″ so the ends tuck against the post / rafter faces.
   const KneeM = width < 30 ? CChannel : Member
   const IN = 1 / 12, DN = 1 / 12
-  const KneeBraces = (
+  const KneeBraces = kneeBraces ? (
     <>
       <KneeM a={[ lpX - IN, lpY - DN]} b={[ rpX - IN, rpY - DN]} flip />
       <KneeM a={[-(lpX - IN), lpY - DN]} b={[-(rpX - IN), rpY - DN]} />
     </>
-  )
+  ) : null
 
   // Eave saddle — a short tube reaching INBOARD from each eave across the leg
   // footprint (legGap, measured into the building), so a built-up leg whose two
   // tubes run perpendicular to the wall both seat the one truss above them.
   const EaveSaddle = legGap > 0 ? (
     <>
-      <TubeBox size={[legGap + M, M, M]} position={[ hw - legGap / 2, height, 0]} />
-      <TubeBox size={[legGap + M, M, M]} position={[-(hw - legGap / 2), height, 0]} />
+      <PlacedTube size={[legGap + M, M, M]} x={ hw - legGap / 2} y={height} />
+      <PlacedTube size={[legGap + M, M, M]} x={-(hw - legGap / 2)} y={height} />
     </>
   ) : null
 
@@ -284,13 +378,17 @@ function AFrameTruss({ width, height, ridgeHeight, z, webPanels = 2, widespan = 
       const flatY = botY(sHalf)                               // chords meet the flat here
       const botNode = (x) => (Math.abs(x) <= sHalf ? flatY : botY(x))
       return (
-        <group position={[0, 0, z]}>
+        <Frame>
           {Top}
           {/* sloped bottom chords (eave → flat center) + flat center splice */}
           <Member a={[-hw, botY(hw)]} b={[-sHalf, flatY]} />
           <Member a={[ hw, botY(hw)]} b={[ sHalf, flatY]} />
           <Member a={[-sHalf, flatY]} b={[sHalf, flatY]} />
           <ConnectorSleeve half={sHalf} y={flatY} />
+          {/* Bottom-chord 12ga tube INSERTS — flush inside the chord assembled,
+              pulled OUT along the chord in the exploded view. */}
+          <MemberInsert a={[-hw, botY(hw)]} b={[-sHalf, flatY]} insId=":l" />
+          <MemberInsert a={[ hw, botY(hw)]} b={[ sHalf, flatY]} insId=":r" />
           {/* eave verticals (rafter eave → bottom chord) + king post + peak gusset */}
           <Member a={[-hw, height]} b={[-hw, botY(hw)]} />
           <Member a={[ hw, height]} b={[ hw, botY(hw)]} />
@@ -307,7 +405,7 @@ function AFrameTruss({ width, height, ridgeHeight, z, webPanels = 2, widespan = 
             )
           })}
           {KneeBraces}{EaveSaddle}{RafterTails}
-        </group>
+        </Frame>
       )
     }
 
@@ -316,21 +414,25 @@ function AFrameTruss({ width, height, ridgeHeight, z, webPanels = 2, widespan = 
       const seq = []
       for (let i = 0; i <= N; i++) seq.push(i % 2 === 0 ? [xAt(i), height] : [xAt(i), rafterY(xAt(i))])
       return (
-        <group position={[0, 0, z]}>
+        <Frame>
           {Top}
           <Member a={[-hw, height]} b={[hw, height]} />
+          {/* Bottom-chord 12ga tube INSERT (pulls out along the chord exploded) */}
+          <MemberInsert a={[-hw, height]} b={[hw, height]} />
           <Member a={[0, height]} b={[0, ridgeHeight]} />
           {seq.slice(0, -1).map((p, i) => <Pair key={i} k={i} a={p} b={seq[i + 1]} />)}
           {KneeBraces}{EaveSaddle}{RafterTails}
-        </group>
+        </Frame>
       )
     }
 
     // Fink (default) — flat bottom chord + fan webs (vertical + diagonal/bay)
     return (
-      <group position={[0, 0, z]}>
+      <Frame>
         {Top}
         <Member a={[-hw, height]} b={[hw, height]} />
+        {/* Bottom-chord 12ga tube INSERT (pulls out along the chord exploded) */}
+        <MemberInsert a={[-hw, height]} b={[hw, height]} />
         <Member a={[0, height]} b={[0, ridgeHeight]} />
         {Array.from({ length: N }, (_, i) => {
           const x0 = xAt(i), x1 = xAt(i + 1)
@@ -342,7 +444,7 @@ function AFrameTruss({ width, height, ridgeHeight, z, webPanels = 2, widespan = 
           )
         })}
         {KneeBraces}{EaveSaddle}{RafterTails}
-      </group>
+      </Frame>
     )
   }
 
@@ -353,19 +455,22 @@ function AFrameTruss({ width, height, ridgeHeight, z, webPanels = 2, widespan = 
   const bcX = collarHalfX(width, hw)                  // fixed-stock collar length (3′/4′/6′)
   const bcY = height + rise * (1 - bcX / hw) - 2 / 12 // ends on the rafters, dropped 2″ to tuck under (matches RegularBow)
   return (
-    <group position={[0, 0, z]}>
+    <Frame>
       {/* Top chords (roof beams / rafters) — overlap at the ridge as one peak */}
       <TopChords hw={hw} height={height} ridgeHeight={ridgeHeight} />
       {/* Horizontal peak brace collar — C-channel under 18′, tube otherwise */}
       {width < 18
         ? <CChannel a={[-bcX, bcY]} b={[bcX, bcY]} />
         : <Member   a={[-bcX, bcY]} b={[bcX, bcY]} />}
+      {/* Peak-brace 12ga tube INSERT (18′+ tube collar) — flush inside assembled,
+          pulls out along the collar exploded. */}
+      {width >= 18 && <MemberInsert a={[-bcX, bcY]} b={[bcX, bcY]} />}
       {/* King post / peak support — only at 30′+ (none on narrower carports) */}
       {width >= 30 && <Member a={[0, bcY]} b={[0, ridgeHeight]} />}
       {KneeBraces}
       {EaveSaddle}
       {RafterTails}
-    </group>
+    </Frame>
   )
 }
 
@@ -373,7 +478,7 @@ function AFrameTruss({ width, height, ridgeHeight, z, webPanels = 2, widespan = 
 // Regular roofs are a single rounded bent pipe (no ridge peak / king post).
 // Centerline follows the same profile as the roof skin in BuildingRoof so the
 // bow sits directly under the panels. Horizontal panels screw straight to it.
-function RegularBow({ width, height, ridgeHeight, z }) {
+function RegularBow({ width, height, ridgeHeight, z, kneeBraces = true }) {
   const wt = useContext(TubeWallContext)
   const geo = useMemo(() => {
     const hw   = width / 2
@@ -448,19 +553,35 @@ function RegularBow({ width, height, ridgeHeight, z }) {
   const IN = 1 / 12, DN = 1 / 12
   const KneeM = width < 30 ? CChannel : Member
   const ColM  = width < 18 ? CChannel : Member
+  // Per-MEMBER explode context (same as AFrameTruss): the collar, king post and
+  // knee braces fan out on their OWN midpoints. The swept BOW is one continuous
+  // bent tube (post → eave curve → rafter → peak → …) so it can't split into
+  // members — it takes a single whole-bow offset on its centroid.
+  const { amount, maxDim } = useExplode()
+  const ctx = useMemo(() => ({ amount, maxDim, z }), [amount, maxDim, z])
+  const bowOff = amount ? pieceExplode([0, (height + ridgeHeight) / 2, z], 'frame', amount, maxDim) : ZERO3M
   return (
-    <group position={[0, 0, z]}>
-      <mesh geometry={geo} material={steelMat} castShadow />
-      {/* Horizontal peak brace collar */}
-      <ColM a={[-bcX, bcY]} b={[bcX, bcY]} />
-      {/* King post / peak support — only at 30′+ */}
-      {width >= 30 && <Member a={[0, bcY]} b={[0, ridgeHeight]} />}
-      {/* Eave knee braces (synced with AFrameTruss) */}
-      <KneeM a={[ lpX - IN, lpY - DN]} b={[ rpX - IN, rpY - DN]} flip />
-      <KneeM a={[-(lpX - IN), lpY - DN]} b={[-(rpX - IN), rpY - DN]} />
-      {/* No rafter tails — regular / standard roofs have NO overhang (only the
-          A-frame styles cantilever past the eave). */}
-    </group>
+    <ExplodeCtx.Provider value={ctx}>
+      <group position={[0, 0, z]}>
+        <mesh geometry={geo} material={steelMat} castShadow position={bowOff} />
+        {/* Horizontal peak brace collar */}
+        <ColM a={[-bcX, bcY]} b={[bcX, bcY]} />
+        {/* Peak-brace 12ga tube INSERT (18′+ tube collar) */}
+        {width >= 18 && <MemberInsert a={[-bcX, bcY]} b={[bcX, bcY]} />}
+        {/* King post / peak support — only at 30′+ */}
+        {width >= 30 && <Member a={[0, bcY]} b={[0, ridgeHeight]} />}
+        {/* Eave knee braces (synced with AFrameTruss) — skipped on the END frames,
+            which the end wall braces instead */}
+        {kneeBraces && (
+          <>
+            <KneeM a={[ lpX - IN, lpY - DN]} b={[ rpX - IN, rpY - DN]} flip />
+            <KneeM a={[-(lpX - IN), lpY - DN]} b={[-(rpX - IN), rpY - DN]} />
+          </>
+        )}
+        {/* No rafter tails — regular / standard roofs have NO overhang (only the
+            A-frame styles cantilever past the eave). */}
+      </group>
+    </ExplodeCtx.Provider>
   )
 }
 
@@ -482,7 +603,13 @@ function railSegments(total, gaps) {
   return segs
 }
 
-export function BaseRails({ width, length, walls, doors = [] }) {
+export function BaseRails({ width, length, walls, doors = [], hiddenInstances = {} }) {
+  // Per-instance: 'baseRail:<side>' hides one wall's perimeter rail.
+  const hidden = (side) => hiddenInstances[`baseRail:${side}`] === true
+  // Per-piece explode: each rail segment drops to the 'base' layer + fans out
+  // radially from the centroid. amount 0 → offset [0,0,0] (assembled).
+  const { amount, maxDim } = useExplode()
+  const off = (x, y, z) => pieceExplode([x, y, z], 'base', amount, maxDim)
   // Sit on the column line (inboard of the building edge) so the rail tucks
   // behind the outboard panels and never reads from the exterior.
   const hw = width / 2 - M / 2
@@ -496,20 +623,54 @@ export function BaseRails({ width, length, walls, doors = [] }) {
       const cc = ((d.xOffset ?? 0.5) - 0.5) * span
       return { a: cc - d.width / 2 - 0.04, b: cc + d.width / 2 + 0.04 }
     })
-  const Rail = ({ axis, fixed, span, gaps }) =>
-    railSegments(span, gaps).map((s, i) => (
-      axis === 'z'
-        ? <TubeBox key={i} size={[M, M, s.len]} position={[fixed, y, s.c]} />
-        : <TubeBox key={i} size={[s.len, M, M]} position={[s.c, y, fixed]} />
-    ))
+  // Base-rail 12ga tube INSERT (widest/tallest clear-span reinforcement, §3/§12):
+  // a thinner 2¼″ tube seated inside the rail, flush/hidden assembled; in the
+  // exploded view it takes the segment's offset PLUS a pull ALONG the rail axis so
+  // it slides out of the tube end and reads as its own piece.
+  const hasRailInsert = (side) => width >= 35 && hiddenInstances[`baseRailInsert:${side}`] !== true
+  const railInsertAt = (p, axis) => {
+    if (!amount) return p                          // flush inside (assembled)
+    const size2 = Math.max(1, maxDim / 26)
+    const draw  = 1.4 * amount * size2             // pull out along the run
+    const o = off(p[0], p[1], p[2])
+    return axis === 'z'
+      ? [p[0] + o[0], p[1] + o[1], p[2] + o[2] + draw]
+      : [p[0] + o[0] + draw, p[1] + o[1], p[2] + o[2]]
+  }
+  const Rail = ({ side, axis, fixed, span, gaps }) => {
+    const showIns = hasRailInsert(side)
+    return railSegments(span, gaps).map((s, i) => {
+      const p = axis === 'z' ? [fixed, y, s.c] : [s.c, y, fixed]
+      const o = off(p[0], p[1], p[2])
+      const at = [p[0] + o[0], p[1] + o[1], p[2] + o[2]]
+      const ins = showIns ? railInsertAt(p, axis) : null
+      const insLen = Math.max(0.3, s.len * 0.5)
+      return (
+        <group key={i}>
+          <Inspectable id="baseRails" label="Base Rail" at={at}>
+            {axis === 'z'
+              ? <TubeBox size={[M, M, s.len]} position={at} />
+              : <TubeBox size={[s.len, M, M]} position={at} />}
+          </Inspectable>
+          {ins && (
+            <Inspectable id="baseRailInserts" label={`${side[0].toUpperCase()}${side.slice(1)} Base-Rail Insert`} at={ins}>
+              {axis === 'z'
+                ? <TubeBox size={[INSERT_M, INSERT_M, insLen]} position={ins} />
+                : <TubeBox size={[insLen, INSERT_M, INSERT_M]} position={ins} />}
+            </Inspectable>
+          )}
+        </group>
+      )
+    })
+  }
   return (
     <group>
       {/* Side walls (run along the length / Z) — always present */}
-      <Rail axis="z" fixed={-hw} span={length - M} gaps={gapsFor('left',  length - M)} />
-      <Rail axis="z" fixed={ hw} span={length - M} gaps={gapsFor('right', length - M)} />
+      {!hidden('left')  && <Rail side="left"  axis="z" fixed={-hw} span={length - M} gaps={gapsFor('left',  length - M)} />}
+      {!hidden('right') && <Rail side="right" axis="z" fixed={ hw} span={length - M} gaps={gapsFor('right', length - M)} />}
       {/* End walls (run along the width / X) — only when closed */}
-      {c(walls?.front) && <Rail axis="x" fixed={-hl} span={width - M} gaps={gapsFor('front', width - M)} />}
-      {c(walls?.back)  && <Rail axis="x" fixed={ hl} span={width - M} gaps={gapsFor('back',  width - M)} />}
+      {c(walls?.front) && !hidden('front') && <Rail side="front" axis="x" fixed={-hl} span={width - M} gaps={gapsFor('front', width - M)} />}
+      {c(walls?.back)  && !hidden('back')  && <Rail side="back"  axis="x" fixed={ hl} span={width - M} gaps={gapsFor('back',  width - M)} />}
     </group>
   )
 }
@@ -755,29 +916,73 @@ export function DiagonalBraces({ width, length, height, spacing = 5, endSpacing 
 }
 
 // ── Hat channel (top-hat section) ─────────────────────────────────────────────
-// Five thin boxes in a canonical local frame: face (brim width) spans local X,
-// depth along local Y, member length along local Z. +Y is the PANEL side: the
-// closed crown faces the panel (sheeting screws to it) and the outturned brim
-// flanges seat DOWN on the frame. Callers wrap it in a positioned/rotated group
-// to aim +Y at the panel.
+// The stamped 4.25″ × 1.5″ 18ga TOP-HAT profile, extruded along the run as one
+// swept sheet-metal section (Three `Shape` → `ExtrudeGeometry`) instead of a stack
+// of boxes — so the trapezoidal Ω silhouette (sloped side legs from the wide 4.25″
+// brim up to the narrow 1.5″ crown) reads correctly wherever the section is exposed
+// (open eaves / gable ends / through open walls).
+//
+// Canonical local frame (unchanged from the old box version so every caller's
+// seating math + rotations still hold): face (brim width) spans local X, depth
+// along local Y, member length along local Z. +Y is the PANEL side — the flat
+// crown faces the panel (sheeting screws to it), the two outturned brim flanges
+// seat DOWN (−Y) on the frame. Origin at mid-depth so the section spans
+// −HAT_DEPTH/2 (brim) … +HAT_DEPTH/2 (crown).
+//
+// Section centerline, brim tip → crown → brim tip (6 folds + short return lips at
+// the flange tips that grab the frame). Sloped legs give the trapezoid.
+const HAT_LIP = 0.35 / 12   // short return lip at each flange tip (~⅜″)
+function hatChannelCenterline() {
+  const halfB = HAT_BASE  / 2       // 4.25″ / 2 — brim flange tip
+  const halfC = HAT_CROWN / 2       // 1.50″ / 2 — crown pan edge
+  const yB    = -HAT_DEPTH / 2      // brim seats on the frame (−Y)
+  const yC    =  HAT_DEPTH / 2      // crown faces the panel (+Y)
+  return [
+    [-halfB, yB + HAT_LIP],   // left return lip tip (folded up off the frame)
+    [-halfB, yB],             // left flange tip
+    [-halfC, yC],             // left shoulder (sloped leg → crown)
+    [ halfC, yC],             // crown top pan (1.5″ wide, faces the panel)
+    [ halfB, yB],             // right flange tip
+    [ halfB, yB + HAT_LIP],   // right return lip tip
+  ]
+}
+// Turn the open centerline polyline into a thin CLOSED loop (centerline ± half the
+// sheet thickness along each vertex normal) so it extrudes into a real solid whose
+// wall thickness reads at the cut ends. Same construction the trim sections use.
+function hatChannelShape() {
+  const center = hatChannelCenterline()
+  const n = center.length
+  const nrm = center.map((p, i) => {
+    const a = center[Math.max(0, i - 1)], b = center[Math.min(n - 1, i + 1)]
+    const tx = b[0] - a[0], ty = b[1] - a[1]
+    const l = Math.hypot(tx, ty) || 1
+    return [-ty / l, tx / l]
+  })
+  const off = (sign) => center.map((p, i) => [p[0] + sign * nrm[i][0] * HAT_WT / 2,
+                                              p[1] + sign * nrm[i][1] * HAT_WT / 2])
+  const top = off(1), bot = off(-1)
+  const s = new THREE.Shape()
+  s.moveTo(top[0][0], top[0][1])
+  for (let i = 1; i < n; i++) s.lineTo(top[i][0], top[i][1])
+  for (let i = n - 1; i >= 0; i--) s.lineTo(bot[i][0], bot[i][1])
+  s.closePath()
+  return s
+}
+const _hatShape = hatChannelShape()
+const _hatGeoCache = new Map()
+function hatGeo(length) {
+  const key = length.toFixed(3)
+  let g = _hatGeoCache.get(key)
+  if (!g) {
+    g = new THREE.ExtrudeGeometry(_hatShape, { depth: length, bevelEnabled: false, steps: 1 })
+    g.translate(0, 0, -length / 2)     // centre the run on the origin (length on local Z)
+    g.computeVertexNormals()
+    _hatGeoCache.set(key, g)
+  }
+  return g
+}
 function HatChannel({ length }) {
-  const halfC = HAT_CROWN / 2
-  const flCx  = halfC + HAT_FL / 2
-  const halfD = HAT_DEPTH / 2
-  return (
-    <group>
-      {/* crown — closed flat, faces +Y toward the panel */}
-      <mesh position={[0, halfD, 0]} material={steelMat} castShadow>
-        <boxGeometry args={[HAT_CROWN, HAT_WT, length]} />
-      </mesh>
-      {/* webs — the two sides, crown edge → brim */}
-      <mesh position={[-halfC, 0, 0]} material={steelMat}><boxGeometry args={[HAT_WT, HAT_DEPTH, length]} /></mesh>
-      <mesh position={[ halfC, 0, 0]} material={steelMat}><boxGeometry args={[HAT_WT, HAT_DEPTH, length]} /></mesh>
-      {/* brim flanges — outturned feet at -Y, seat on the frame */}
-      <mesh position={[-flCx, -halfD, 0]} material={steelMat}><boxGeometry args={[HAT_FL, HAT_WT, length]} /></mesh>
-      <mesh position={[ flCx, -halfD, 0]} material={steelMat}><boxGeometry args={[HAT_FL, HAT_WT, length]} /></mesh>
-    </group>
-  )
+  return <mesh geometry={hatGeo(length)} material={steelMat} castShadow />
 }
 
 // Secondary-member section (purlin / girt): a HAT CHANNEL normally, or a 2½″
@@ -802,12 +1007,16 @@ export function purlinRowCount(width, ridgeHeight, height, spacing = 2.5) {
   return Math.max(Math.ceil((hw + 1.25) / 3), Math.ceil(slopeFull / spacing))
 }
 
-export function RoofPurlins({ width, length, height, ridgeHeight, spacing = 2.5, hiddenParts = {}, square = false }) {
+export function RoofPurlins({ width, length, height, ridgeHeight, spacing = 2.5, hiddenParts = {}, hiddenInstances = {}, square = false }) {
   const hw       = width / 2
   const rise     = ridgeHeight - height
   const slopeLen = Math.sqrt(hw * hw + rise * rise)
   const pitch    = Math.atan2(rise, hw)
-  const hidden   = (gi) => hiddenParts[`purlins#${gi}`]
+  // Legacy 'purlins#gi' (hiddenParts) OR new 'purlin:gi' (hiddenInstances).
+  const hidden   = (gi) => hiddenParts[`purlins#${gi}`] || hiddenInstances[`purlin:${gi}`] === true
+  // Per-piece explode: each purlin run lifts to the 'secondary' layer + fans out.
+  const { amount, maxDim } = useExplode()
+  const off = (x, y, z) => pieceExplode([x, y, z], 'secondary', amount, maxDim)
 
   // Stand the purlin OFF the rafter so it seats on the rafter's outboard face
   // (half the rafter tube + half the purlin depth) instead of intersecting it.
@@ -844,22 +1053,30 @@ export function RoofPurlins({ width, length, height, ridgeHeight, spacing = 2.5,
   const purlinLen = length + 2 * GABLE_OH
   return (
     <group>
-      {rows.map(({ x, y }, i) => (
-        <group key={i}>
-          {/* Right slope (Roof Purlin 1…N) */}
-          {!hidden(i) && (
-            <group position={[ x + nx, y + ny, 0]} rotation={[0, 0, -pitch]}>
-              <SecBar length={purlinLen} square={square} />
-            </group>
-          )}
-          {/* Left slope (Roof Purlin N+1…2N) */}
-          {!hidden(N + i) && (
-            <group position={[-x - nx, y + ny, 0]} rotation={[0, 0,  pitch]}>
-              <SecBar length={purlinLen} square={square} />
-            </group>
-          )}
-        </group>
-      ))}
+      {rows.map(({ x, y }, i) => {
+        const rp = [x + nx, y + ny, 0],  ro = off(rp[0], rp[1], rp[2])
+        const lp = [-x - nx, y + ny, 0], lo = off(lp[0], lp[1], lp[2])
+        return (
+          <group key={i}>
+            {/* Right slope (Roof Purlin 1…N) */}
+            {!hidden(i) && (
+              <Inspectable id="purlins" label={`Roof Purlin ${i + 1}`} at={[rp[0] + ro[0], rp[1] + ro[1], rp[2] + ro[2]]}>
+                <group position={[rp[0] + ro[0], rp[1] + ro[1], rp[2] + ro[2]]} rotation={[0, 0, -pitch]}>
+                  <SecBar length={purlinLen} square={square} />
+                </group>
+              </Inspectable>
+            )}
+            {/* Left slope (Roof Purlin N+1…2N) */}
+            {!hidden(N + i) && (
+              <Inspectable id="purlins" label={`Roof Purlin ${N + i + 1}`} at={[lp[0] + lo[0], lp[1] + lo[1], lp[2] + lo[2]]}>
+                <group position={[lp[0] + lo[0], lp[1] + lo[1], lp[2] + lo[2]]} rotation={[0, 0,  pitch]}>
+                  <SecBar length={purlinLen} square={square} />
+                </group>
+              </Inspectable>
+            )}
+          </group>
+        )
+      })}
     </group>
   )
 }
@@ -1007,12 +1224,16 @@ export function wallGirtCount(width, length, height, ridgeHeight, roofStyle, wal
   return n
 }
 
-export function WallGirts({ width, length, height, ridgeHeight, roofStyle, walls, doors, wallOrientation, spacing = 4, hiddenParts = {}, square = false }) {
+export function WallGirts({ width, length, height, ridgeHeight, roofStyle, walls, doors, wallOrientation, spacing = 4, hiddenParts = {}, hiddenInstances = {}, square = false }) {
   const hw = width / 2
   const hl = length / 2
   const w  = walls ?? {}
   const d  = doors ?? []
-  const hidden = (gi) => hiddenParts[`girts#${gi}`]
+  // Legacy 'girts#gi' (hiddenParts) OR new 'girt:gi' (hiddenInstances).
+  const hidden = (gi) => hiddenParts[`girts#${gi}`] || hiddenInstances[`girt:${gi}`] === true
+  // Per-piece explode: each girt run lifts to the 'secondary' layer + fans out.
+  const { amount, maxDim } = useExplode()
+  const eoff = (x, y, z) => pieceExplode([x, y, z], 'secondary', amount, maxDim)
 
   // HORIZONTAL wall sheeting screws straight to the posts/bows — NO girts needed.
   // Only VERTICAL paneling gets hat-channel girts.
@@ -1073,7 +1294,17 @@ export function WallGirts({ width, length, height, ridgeHeight, roofStyle, walls
     if (!range) continue
     for (const y of girtYsIn(range)) {
       const idx = gi++
-      if (!hidden(idx)) items.push(<GirtBar key={`g${idx}`} wallW={s.wallW} y={y} wallDoors={s.wallDoors} axis={s.axis} offset={s.offset} ext={GOFF} square={square} />)
+      if (hidden(idx)) continue
+      // Girt's representative world anchor drives its per-piece offset.
+      const anchor = s.axis === 'x' ? [s.offset, y, 0] : [0, y, s.offset]
+      const o = eoff(anchor[0], anchor[1], anchor[2])
+      items.push(
+        <group key={`g${idx}`} position={o}>
+          <Inspectable id="girts" label={`Wall Girt ${idx + 1}`} at={[anchor[0], y, anchor[2]]}>
+            <GirtBar wallW={s.wallW} y={y} wallDoors={s.wallDoors} axis={s.axis} offset={s.offset} ext={GOFF} square={square} />
+          </Inspectable>
+        </group>
+      )
     }
   }
   if (isAFrame) {
@@ -1081,7 +1312,13 @@ export function WallGirts({ width, length, height, ridgeHeight, roofStyle, walls
       if (!isFullyClosed(w[side])) continue
       for (const sx of [-hw, hw]) {
         const idx = gi++
-        if (!hidden(idx)) items.push(<RakeGirt key={`r${idx}`} a={[sx, height]} b={[0, ridgeHeight]} z={z} square={square} />)
+        if (hidden(idx)) continue
+        const o = eoff(sx / 2, (height + ridgeHeight) / 2, z)
+        items.push(
+          <group key={`r${idx}`} position={o}>
+            <RakeGirt a={[sx, height]} b={[0, ridgeHeight]} z={z} square={square} />
+          </group>
+        )
       }
     }
   }
@@ -1089,12 +1326,21 @@ export function WallGirts({ width, length, height, ridgeHeight, roofStyle, walls
 }
 
 // ── Structural frames: always visible in both normal + frame view ──────────────
-export function StructuralFrames({ width, length, height, ridgeHeight, roofStyle, structure, widespanStyle = 'fink' }) {
+export function StructuralFrames({ width, length, height, ridgeHeight, roofStyle, structure, widespanStyle = 'fink', hiddenInstances = {} }) {
+  // Per-instance: 'frame:i' hides the whole truss i (rafters + peak/knee braces + webs).
+  const hidden = (id) => hiddenInstances[id] === true
+  // Per-MEMBER explode: each frame's INDIVIDUAL members (rafters, peak/knee braces,
+  // bottom chord, webs, king post, inserts…) now fan out on their OWN world
+  // midpoints inside AFrameTruss / RegularBow — the frame group is NOT offset as
+  // one block anymore. Only the standalone RIDGE tube still takes a piece offset
+  // here. amount 0 → offset [0,0,0] (assembled state pixel-identical).
+  const { amount, maxDim } = useExplode()
+  const off = (x, y, z) => pieceExplode([x, y, z], 'frame', amount, maxDim)
   const spacing   = structure?.spacing ?? 5
   const webPanels = structure?.webPanels ?? 2
   const legGap    = structure?.legGap ?? 0
   const isRegular = roofStyle === 'regular'
-  const widespan  = width > 30   // >30′ → full triangulated truss (per plans)
+  const widespan  = width > 30   // >30′ → triangulated A-frame truss (single ≤40′, doubled >40′ via structure.trussType)
 
   // Frames distributed evenly so the end walls always carry a frame. The END
   // frames are pulled in by M/2 to match the end-wall legs/feet/base rails (which
@@ -1112,20 +1358,37 @@ export function StructuralFrames({ width, length, height, ridgeHeight, roofStyle
 
   // One truss per bent — its eave seats onto the (possibly multi-tube) leg via a
   // saddle that spans legGap, so a built-up leg reads as a single truss sitting
-  // flush over it (not two trusses).
-  function frameAt(z, key) {
-    return <Bow key={key} width={width} height={height} ridgeHeight={ridgeHeight} z={z} webPanels={webPanels} widespan={widespan} legGap={legGap} widespanStyle={widespanStyle} />
+  // flush over it (not two trusses). The two END frames (first & last of trussZs,
+  // nearest the end walls) drop their knee braces — the end wall braces the frame
+  // instead, so interior frames alone carry the eave gussets.
+  function frameAt(z, key, kneeBraces = true) {
+    return <Bow key={key} width={width} height={height} ridgeHeight={ridgeHeight} z={z} webPanels={webPanels} widespan={widespan} legGap={legGap} widespanStyle={widespanStyle} kneeBraces={kneeBraces} />
   }
 
   return (
     <group>
-      {trussZs.map((z, i) => frameAt(z, i))}
+      {trussZs.map((z, i) => {
+        if (hidden(`frame:${i}`)) return null
+        // No whole-frame offset — each member self-explodes inside the frame; the
+        // Inspectable anchor rides to the exploded peak so the tooltip stays put.
+        const pk = off(0, ridgeHeight, z)
+        return (
+          <group key={i}>
+            <Inspectable id="frames" label={`Truss ${i + 1}`} at={[pk[0], ridgeHeight + pk[1], z + pk[2]]}>
+              {frameAt(z, i, i !== 0 && i !== trussZs.length - 1)}
+            </Inspectable>
+          </group>
+        )
+      })}
       {/* Ridge tube — A-frame only (no ridge on a rounded Regular roof), 20'+ wide */}
-      {width >= 20 && !isRegular && (
-        <mesh position={[0, ridgeHeight, 0]} material={steelMat}>
-          <boxGeometry args={[M, M, length]} />
-        </mesh>
-      )}
+      {width >= 20 && !isRegular && (() => {
+        const o = off(0, ridgeHeight, 0)
+        return (
+          <mesh position={[o[0], ridgeHeight + o[1], o[2]]} material={steelMat}>
+            <boxGeometry args={[M, M, length]} />
+          </mesh>
+        )
+      })()}
     </group>
   )
 }

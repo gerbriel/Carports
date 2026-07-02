@@ -3,15 +3,19 @@ import BuildingWalls, { getWallSkylightBases } from './BuildingWalls'
 import SkylightSurface       from './Skylight'
 import BuildingColumns        from './BuildingColumns'
 import { RoofPurlins, WallGirts, StructuralFrames, DiagonalBraces, BaseRails, TubeWallContext, roofLift } from './BuildingTrusses'
+import BuildingHardware        from './BuildingHardware'
 import TrimMesh               from './TrimMesh'
 import ExtendedGableCanopy    from './ExtendedGableCanopy'
 import BuildingLeanTo, { LeanToCorner } from './BuildingLeanTo'
 import BuildingInteriorWalls from './BuildingInteriorWalls'
 import BuildingFoundation, { LeanToFoundation } from './BuildingFoundation'
 import BuildingOpenings        from './BuildingOpenings'
+import Exploded                from './Exploded'
+import { PieceInspectProvider } from './PieceInspect'
 import FreeStandingLeanTo     from './FreeStandingLeanTo'
 import Telehandler            from './Telehandler'
 import DeliveryRig            from './DeliveryRig'
+import DeliveryAccessRing     from './DeliveryAccessRing'
 import ScissorLift            from './ScissorLift'
 import DraggableProp          from './DraggableProp'
 import { deriveStructure, SURFACE_ANCHORS, installRequirements } from '../../../data/structural'
@@ -53,12 +57,12 @@ export default function Building({ config }) {
 
   // Site equipment counts: telehandler only when >30′ wide, scissor lift only when
   // >12′ tall; either jumps to 2 when >40′ wide (matches the Install Requirements
-  // readout in the panel). 0 = not shown.
+  // readout in the panel). 0 = not shown. STRICTLY size-driven: the customer's
+  // "Install Equipment to Provide" counts (scissorLiftCount / telehandlerCount) are
+  // quote info only — they can't add or remove the staged rigs from the scene.
   const req = installRequirements(config)
-  // Customer can override how many lifts/telehandlers they'll provide (Options →
-  // Install Equipment to Provide); null falls back to the size-based suggestion.
-  const scissorQty     = config.scissorLiftCount ?? req.scissorQty
-  const telehandlerQty = config.telehandlerCount ?? req.telehandlerQty
+  const scissorQty     = req.scissorQty
+  const telehandlerQty = req.telehandlerQty
 
   // Foundation surface (concrete forced when oversize) + a valid anchor for it
   const effSurface   = (width > 30 || height > 12) ? 'concrete' : config.installationSurface
@@ -73,8 +77,12 @@ export default function Building({ config }) {
   const vis  = config.componentVisibility ?? {}
   const show = (k) => vis[k] !== false
 
-  // Over 30′ wide → girts + purlins are 2½″ SQUARE TUBE (not hat channel), per
-  // spec. Applies to the center building AND any lean-to attachments.
+  // Per-INSTANCE show/hide (granular tree). Map of instance id → true (hidden).
+  // Renderers skip an instance when its id is in here (its TYPE must still be on).
+  const hiddenInstances = config.hiddenInstances ?? {}
+
+  // Over 30′ wide → girts + purlins are 2½″ SQUARE TUBE (not hat channel).
+  // Applies to the center building AND any lean-to attachments.
   const squareSecondary = width > 30
 
   // Free-standing lean-to: a single-slope building (its own posts both sides).
@@ -96,11 +104,17 @@ export default function Building({ config }) {
     )
   }
 
+  // Truck & trailer default staging spot (off the front-left corner). Shared by the
+  // draggable prop and the 40′ delivery-access ring so both stay in sync.
+  const deliveryDefaultPos = [-width / 2 - 18, 0, -length / 2 - 62]
+  const deliveryDefaultRot = Math.PI / 2
+
   return (
     <TubeWallContext.Provider value={structure.tubeWall}>
+    <PieceInspectProvider>
     <group>
       {/* ── Foundation slab + per-post anchors ── */}
-      {show('foundation') && <BuildingFoundation width={width} length={length} structure={structure} walls={walls} surface={effSurface} anchorType={anchorType} slabEdge={config.slabEdge} showAnchors={showAnchors} trimColor={trimColor.hex} />}
+      {show('foundation') && <Exploded id="foundation"><BuildingFoundation width={width} length={length} structure={structure} walls={walls} surface={effSurface} anchorType={anchorType} slabEdge={config.slabEdge} showAnchors={showAnchors} trimColor={trimColor.hex} /></Exploded>}
 
       {/* ── Per-lean-to foundation pads: each enabled lean-to gets its own pad on
             its chosen surface (null → inherits the main building's surface). ── */}
@@ -114,6 +128,7 @@ export default function Building({ config }) {
           <LeanToFoundation
             key={side} side={side}
             mainWidth={width} length={length} leanWidth={lt.width}
+            frameSpacing={structure.spacing}
             surface={ltSurface} anchorType={ltAnchor} showAnchors={showAnchors}
           />
         )
@@ -121,81 +136,116 @@ export default function Building({ config }) {
 
       {/* ── Base rail: along each closed wall, the column feet seat into it. Cut
             where a floor-standing opening (door / roll-up) crosses it. ── */}
-      {show('baseRails') && <BaseRails width={width} length={length} walls={walls} doors={doors} />}
+      {show('baseRails') && <Exploded id="baseRails"><BaseRails width={width} length={length} walls={walls} doors={doors} hiddenInstances={hiddenInstances} /></Exploded>}
 
-      {/* ── Columns: side legs by size + rating, plus closed-end posts. Posts that
-            fall inside an opening are skipped (the frame-out jambs frame it). ── */}
-      {(show('sideLegs') || show('endPosts')) && (
-        <BuildingColumns width={width} length={length} height={height} ridgeHeight={ridgeHeight} structure={structure} walls={walls} doors={doors} showSide={show('sideLegs')} showEnd={show('endPosts')} />
+      {/* ── Columns: side legs by size + rating, plus closed-end posts + the gable
+            brace [20] on partially-enclosed ends. Posts that fall inside an opening
+            are skipped (the frame-out jambs frame it). ── */}
+      {(show('sideLegs') || show('endPosts') || show('gableBraces')) && (
+        <Exploded id="sideLegs">
+          <BuildingColumns width={width} length={length} height={height} ridgeHeight={ridgeHeight} structure={structure} walls={walls} doors={doors} showSide={show('sideLegs')} showEnd={show('endPosts')} showGableBrace={show('gableBraces')} hiddenInstances={hiddenInstances} />
+        </Exploded>
       )}
 
       {/* ── Door / window frame-outs: jamb posts + header (double on end walls) +
             cripples — even on walls that carry roll-up doors. ── */}
-      {show('frames') && <BuildingOpenings width={width} length={length} height={height} ridgeHeight={ridgeHeight} doors={doors} />}
+      {show('frames') && <Exploded id="doors"><BuildingOpenings width={width} length={length} height={height} ridgeHeight={ridgeHeight} doors={doors} /></Exploded>}
 
       {/* ── Structural frames: single or double truss (A-frame or rounded bow) ── */}
-      {show('frames') && <StructuralFrames width={width} length={length} height={height} ridgeHeight={ridgeHeight} roofStyle={roofStyle} structure={structure} widespanStyle={widespanTrussStyle} />}
+      {show('frames') && <Exploded id="frames"><StructuralFrames width={width} length={length} height={height} ridgeHeight={ridgeHeight} roofStyle={roofStyle} structure={structure} widespanStyle={widespanTrussStyle} hiddenInstances={hiddenInstances} /></Exploded>}
+
+      {/* ── Connection hardware: brackets / clips / plate gussets / connector
+            sleeves / king-post peak gusset + A325 bolts + SDS screw markers at the
+            real joints. Instanced (one draw call per type); rides with the frame in
+            ALL views (normal / frame / diagnostic). Skips a joint whose parent leg
+            or truss is hidden via hiddenInstances. ── */}
+      {show('frames') && (
+        <Exploded id="frames">
+          <BuildingHardware
+            width={width} length={length} height={height} ridgeHeight={ridgeHeight}
+            roofStyle={roofStyle} structure={structure} walls={walls} doors={doors}
+            windSpeed={config.windSpeed} hiddenInstances={hiddenInstances}
+            config={config}
+          />
+        </Exploded>
+      )}
 
       {/* ── Roof purlins: only A-Frame Vertical (vertical panels need purlins to ──
           ── screw into; horizontal & regular panels fasten straight to the bows) ── */}
       {show('purlins') && roofStyle === 'a_frame_vertical' && (
-        <RoofPurlins width={width} length={length} height={height} ridgeHeight={ridgeHeight} spacing={structure.purlinSpacing} hiddenParts={config.hiddenParts} square={squareSecondary} />
+        <Exploded id="purlins">
+          <RoofPurlins width={width} length={length} height={height} ridgeHeight={ridgeHeight} spacing={structure.purlinSpacing} hiddenParts={config.hiddenParts} hiddenInstances={hiddenInstances} square={squareSecondary} />
+        </Exploded>
       )}
 
       {/* ── Diagonal sway braces: shown only when selected (Side Bracing toggle),
           ── identical in frame-only and clad views so the two stay in sync ── */}
       {show('braces') && structure.bracing === 'diagonal' && (
-        <DiagonalBraces width={width} length={length} height={height} spacing={structure.spacing} endSpacing={structure.endPostSpacing} walls={walls} doors={doors} />
+        <Exploded id="braces">
+          <DiagonalBraces width={width} length={length} height={height} spacing={structure.spacing} endSpacing={structure.endPostSpacing} walls={walls} doors={doors} />
+        </Exploded>
       )}
 
       {/* ── Wall girts (hat channels): always rendered, tucked inside the panel
           ── skin so they read from the interior / through open walls only ── */}
       {show('girts') && (
-        <WallGirts
-          width={width} length={length} height={height} ridgeHeight={ridgeHeight}
-          roofStyle={roofStyle} walls={walls} doors={doors}
-          wallOrientation={(wallOrientation === 'auto' || !wallOrientation)
-            ? (roofStyle === 'a_frame_vertical' ? 'vertical' : 'horizontal')
-            : wallOrientation}
-          spacing={structure.girtSpacing}
-          hiddenParts={config.hiddenParts}
-          square={squareSecondary}
-        />
+        <Exploded id="girts">
+          <WallGirts
+            width={width} length={length} height={height} ridgeHeight={ridgeHeight}
+            roofStyle={roofStyle} walls={walls} doors={doors}
+            wallOrientation={(wallOrientation === 'auto' || !wallOrientation)
+              ? (roofStyle === 'a_frame_vertical' ? 'vertical' : 'horizontal')
+              : wallOrientation}
+            spacing={structure.girtSpacing}
+            hiddenParts={config.hiddenParts}
+            hiddenInstances={hiddenInstances}
+            square={squareSecondary}
+          />
+        </Exploded>
       )}
 
       {/* ── Cladding + trim: hidden in frame-only view ── */}
       {!frameOnly && (
         <>
           {show('roof') && (
-            <BuildingRoof
-              width={width} length={length} height={height}
-              roofStyle={roofStyle} ridgeHeight={ridgeHeight}
-              color={roofColor.hex}
-              panelProfile={panelProfile}
-            />
+            <Exploded id="roof">
+              <BuildingRoof
+                width={width} length={length} height={height}
+                roofStyle={roofStyle} ridgeHeight={ridgeHeight}
+                color={roofColor.hex}
+                panelProfile={panelProfile}
+                hiddenInstances={hiddenInstances}
+              />
+            </Exploded>
           )}
           {show('walls') && (
-            <BuildingWalls
-              width={width} length={length} height={height}
-              walls={walls} doors={show('doors') ? doors : []}
-              ridgeHeight={ridgeHeight} roofStyle={roofStyle}
-              color={wallColor.hex}
-              wainscotEnabled={wainscotEnabled && show('wainscot')}
-              wainscotColor={wainscotColor}
-              wainscotWalls={show('wainscot') ? wainscotWalls : {}}
-              wallOrientation={wallOrientation}
-              frameSpacing={structure.spacing}
-              endPostSpacing={structure.endPostSpacing}
-              panelProfile={panelProfile}
-            />
+            <Exploded id="walls">
+              <BuildingWalls
+                width={width} length={length} height={height}
+                walls={walls} doors={show('doors') ? doors : []}
+                ridgeHeight={ridgeHeight} roofStyle={roofStyle}
+                color={wallColor.hex}
+                wainscotEnabled={wainscotEnabled && show('wainscot')}
+                wainscotColor={wainscotColor}
+                wainscotWalls={show('wainscot') ? wainscotWalls : {}}
+                wallOrientation={wallOrientation}
+                frameSpacing={structure.spacing}
+                endPostSpacing={structure.endPostSpacing}
+                panelProfile={panelProfile}
+                hiddenInstances={hiddenInstances}
+              />
+            </Exploded>
           )}
           {(show('ridgeCap') || show('eaveTrim') || show('cornerTrim')) && (
-            <TrimMesh
-              width={width} length={length} height={height}
-              roofStyle={roofStyle} ridgeHeight={ridgeHeight}
-              color={trimColor.hex} roofColor={roofColor.hex}
-              walls={walls} leanTos={leanTos} vis={vis}
-            />
+            <Exploded id="eaveTrim">
+              <TrimMesh
+                width={width} length={length} height={height}
+                roofStyle={roofStyle} ridgeHeight={ridgeHeight}
+                color={trimColor.hex} roofColor={roofColor.hex}
+                walls={walls} leanTos={leanTos} vis={vis}
+                hiddenInstances={hiddenInstances}
+              />
+            </Exploded>
           )}
 
           {frontExtend > 0 && (
@@ -261,11 +311,14 @@ export default function Building({ config }) {
             panelProfile={panelProfile}
             wallOrientation={wallOrientation} roofStyle={roofStyle}
             girtSpacing={structure.girtSpacing}
+            frameSpacing={structure.spacing}
             squareSecondary={squareSecondary}
             showSkylights={show('skylights') && !frameOnly}
             wainscotEnabled={wainscotEnabled && show('wainscot')}
             wainscotColor={wainscotColor.hex}
             wainscotWalls={show('wainscot') ? wainscotWalls : {}}
+            trimVis={{ eave: show('eaveTrim'), rake: show('rakeTrim'), corner: show('cornerTrim') }}
+            hiddenInstances={hiddenInstances}
           />
         )
       })}
@@ -277,6 +330,7 @@ export default function Building({ config }) {
           roofStyle={roofStyle} wallColor={wallColor.hex} panelProfile={panelProfile}
           structure={structure} frameOnly={frameOnly}
           anchorType={anchorType} showAnchors={showAnchors}
+          hiddenInstances={hiddenInstances}
         />
       )}
 
@@ -308,6 +362,8 @@ export default function Building({ config }) {
               sideLean={sideLean} endLean={endLean}
               roofColor={roofColor.hex} wallColor={wallColor.hex} trimColor={trimColor.hex}
               panelProfile={panelProfile} frameOnly={frameOnly} isVertical
+              trimVis={{ eave: show('eaveTrim'), rake: show('rakeTrim'), corner: show('cornerTrim') }}
+              hiddenInstances={hiddenInstances}
             />
           )
         })
@@ -322,12 +378,18 @@ export default function Building({ config }) {
         </DraggableProp>
       ))}
 
-      {/* ── Loaded pickup + 30′ trailer parked near the telehandler. Draggable. ── */}
+      {/* ── Loaded pickup + 30′ trailer parked near the telehandler. Draggable.
+            A light-green 40′ access ring rings the building and turns red if the
+            rig is dragged fully outside it (an extra labor charge then applies). ── */}
       {!frameOnly && (
-        <DraggableProp id="delivery-0" label="Truck & Trailer"
-          defaultPos={[-width / 2 - 18, 0, -length / 2 - 62]} defaultRot={Math.PI / 2}>
-          <DeliveryRig wallColor={wallColor.hex} panelProfile={panelProfile} />
-        </DraggableProp>
+        <>
+          <DeliveryAccessRing width={width} length={length}
+            defaultPos={deliveryDefaultPos} defaultRot={deliveryDefaultRot} />
+          <DraggableProp id="delivery-0" label="Truck & Trailer"
+            defaultPos={deliveryDefaultPos} defaultRot={deliveryDefaultRot}>
+            <DeliveryRig wallColor={wallColor.hex} panelProfile={panelProfile} />
+          </DraggableProp>
+        </>
       )}
 
       {/* ── Scissor lift(s) staged BEHIND the telehandler + truck — shown only when
@@ -339,6 +401,7 @@ export default function Building({ config }) {
         </DraggableProp>
       ))}
     </group>
+    </PieceInspectProvider>
     </TubeWallContext.Provider>
   )
 }

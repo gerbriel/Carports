@@ -33,6 +33,14 @@ const OPEN_ELEVATION_URL = process.env.OPEN_ELEVATION_URL || 'https://api.open-e
 // Geocoding: Nominatim (OpenStreetMap). Public instance by default; self-host or use
 // a provider URL via NOMINATIM_URL (must be the /search endpoint base).
 const NOMINATIM_URL = process.env.NOMINATIM_URL || 'https://nominatim.openstreetmap.org/search'
+// Self-hosted geocoder (NO third-party at request time). When GEOCODER_URL is set it
+// becomes the authoritative source for BOTH the final geocode (/geocode) and the
+// type-ahead suggestions (/geocode/suggest) — nothing is sent to Google/Nominatim.
+// Scales nationwide: import the whole US into your own instance. GEOCODER selects the
+// response shape ('pelias' or 'photon'). See geocoder/README.md for the deployment.
+// Left unset → the existing Google→public-Nominatim path (unchanged) still runs.
+const GEOCODER = (process.env.GEOCODER || 'pelias').toLowerCase()   // 'pelias' | 'photon'
+const GEOCODER_URL = (process.env.GEOCODER_URL || '').replace(/\/+$/, '')   // e.g. http://localhost:4400
 const TWENTY_API_URL = process.env.TWENTY_API_URL
 const TWENTY_API_KEY = process.env.TWENTY_API_KEY
 
@@ -48,6 +56,13 @@ app.get('/geocode', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
   const q = (req.query.q || '').toString().trim()
   if (!q) return res.status(400).json({ error: 'Missing q' })
+
+  // 0) Self-hosted geocoder — authoritative when configured (no third-party call).
+  if (GEOCODER_URL) {
+    const [top] = await selfHostedGeocode(q, { limit: 1 })
+    if (top) return res.json({ lat: top.lat, lng: top.lng, label: top.label, source: GEOCODER })
+    return res.status(404).json({ error: 'Address not found' })
+  }
 
   // 1) Google Geocoding API (uses the existing key; requires "Geocoding API" enabled)
   if (GOOGLE_API_KEY) {
@@ -80,6 +95,135 @@ app.get('/geocode', async (req, res) => {
 
   return res.status(404).json({ error: 'Address not found' })
 })
+
+// GET /geocode/suggest?q=PREFIX — up to 5 address candidates for the autocomplete
+// dropdown. Nominatim with a proper server-side User-Agent (per OSM policy) and
+// addressdetails, so each candidate carries lat/lng + a split street/city/state/zip
+// and the client can place the site without a second geocode. Key-free. Debounced
+// on the client (OSM's public instance discourages per-keystroke autocomplete —
+// set NOMINATIM_URL to a self-hosted instance for volume). Returns { suggestions }.
+app.get('/geocode/suggest', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  const q = (req.query.q || '').toString().trim()
+  if (q.length < 3) return res.json({ suggestions: [] })
+
+  // Self-hosted geocoder (autocomplete) — authoritative when configured, no 3rd party.
+  if (GEOCODER_URL) {
+    const suggestions = await selfHostedGeocode(q, { limit: 5, autocomplete: true })
+    return res.json({ suggestions })
+  }
+
+  // Fallback: public Nominatim (only when no self-hosted geocoder is configured).
+  try {
+    const url = `${NOMINATIM_URL}?format=jsonv2&addressdetails=1&limit=5&countrycodes=us&q=${encodeURIComponent(q)}`
+    const r = await fetch(url, { headers: { 'User-Agent': 'QualityMetalCarports-Builder/1.0 (+https://qualitymetalcarportsca.com)', Accept: 'application/json' } })
+    const d = await r.json()
+    const suggestions = Array.isArray(d) ? d.map(nominatimToSuggestion).filter(Boolean) : []
+    return res.json({ suggestions })
+  } catch (err) {
+    console.error('Nominatim suggest failed:', err.message)
+    return res.json({ suggestions: [] })
+  }
+})
+
+// Query the self-hosted geocoder for up to `limit` candidates, normalised to the
+// { label, lat, lng, street, city, state, zip } shape the client expects. `search`
+// for the final geocode, `autocomplete` for type-ahead (Pelias only — Photon uses
+// its single /api endpoint for both). Returns [] on error/misconfig so the caller
+// can 404/fall back cleanly. US-only (both engines are filtered to the US).
+async function selfHostedGeocode(q, { limit = 5, autocomplete = false } = {}) {
+  if (!GEOCODER_URL) return []
+  try {
+    if (GEOCODER === 'photon') {
+      // Photon: one search endpoint, purpose-built for autocomplete. GeoJSON out.
+      const url = `${GEOCODER_URL}/api?q=${encodeURIComponent(q)}&limit=${limit}&lang=en`
+      const r = await fetch(url, { headers: { Accept: 'application/json' } })
+      if (!r.ok) return []
+      const d = await r.json()
+      return (Array.isArray(d?.features) ? d.features : []).map(photonToSuggestion).filter(Boolean)
+    }
+    // Pelias (default): /v1/autocomplete for type-ahead, /v1/search for a full match.
+    const path = autocomplete ? 'autocomplete' : 'search'
+    const url = `${GEOCODER_URL}/v1/${path}?text=${encodeURIComponent(q)}&size=${limit}&boundary.country=USA`
+    const r = await fetch(url, { headers: { Accept: 'application/json' } })
+    if (!r.ok) return []
+    const d = await r.json()
+    return (Array.isArray(d?.features) ? d.features : []).map(peliasToSuggestion).filter(Boolean)
+  } catch (err) {
+    console.error(`Self-hosted geocoder (${GEOCODER}) failed:`, err.message)
+    return []
+  }
+}
+
+// Pelias GeoJSON feature → suggestion. `region_a` is already the 2-letter state code.
+function peliasToSuggestion(f) {
+  const c = f?.geometry?.coordinates
+  if (!Array.isArray(c) || c.length < 2) return null
+  const p = f.properties || {}
+  const street = p.housenumber ? `${p.housenumber} ${p.street || ''}`.trim() : (p.street || p.name || '')
+  return {
+    label: p.label || p.name || '',
+    lat: c[1], lng: c[0],
+    street,
+    city: p.locality || p.localadmin || p.county || '',
+    state: p.region_a || p.region || '',
+    zip: p.postalcode || '',
+  }
+}
+
+// Photon GeoJSON feature → suggestion. Photon returns the full state name, so map it
+// to the 2-letter code the form uses; drop non-US rows (nationwide-US scope).
+function photonToSuggestion(f) {
+  const c = f?.geometry?.coordinates
+  if (!Array.isArray(c) || c.length < 2) return null
+  const p = f.properties || {}
+  if (p.countrycode && p.countrycode !== 'US') return null
+  const street = [p.housenumber, p.street || p.name].filter(Boolean).join(' ')
+  const state = US_STATE_CODES[(p.state || '').toLowerCase()] || p.state || ''
+  const label = [street || p.name, p.city, [state, p.postcode].filter(Boolean).join(' ').trim()]
+    .filter(Boolean).join(', ')
+  return {
+    label,
+    lat: c[1], lng: c[0],
+    street: street || p.name || '',
+    city: p.city || p.district || p.county || '',
+    state,
+    zip: p.postcode || '',
+  }
+}
+
+// Full US state/territory name → USPS 2-letter code (Photon emits full names).
+const US_STATE_CODES = {
+  alabama: 'AL', alaska: 'AK', arizona: 'AZ', arkansas: 'AR', california: 'CA',
+  colorado: 'CO', connecticut: 'CT', delaware: 'DE', 'district of columbia': 'DC',
+  florida: 'FL', georgia: 'GA', hawaii: 'HI', idaho: 'ID', illinois: 'IL',
+  indiana: 'IN', iowa: 'IA', kansas: 'KS', kentucky: 'KY', louisiana: 'LA',
+  maine: 'ME', maryland: 'MD', massachusetts: 'MA', michigan: 'MI', minnesota: 'MN',
+  mississippi: 'MS', missouri: 'MO', montana: 'MT', nebraska: 'NE', nevada: 'NV',
+  'new hampshire': 'NH', 'new jersey': 'NJ', 'new mexico': 'NM', 'new york': 'NY',
+  'north carolina': 'NC', 'north dakota': 'ND', ohio: 'OH', oklahoma: 'OK',
+  oregon: 'OR', pennsylvania: 'PA', 'rhode island': 'RI', 'south carolina': 'SC',
+  'south dakota': 'SD', tennessee: 'TN', texas: 'TX', utah: 'UT', vermont: 'VT',
+  virginia: 'VA', washington: 'WA', 'west virginia': 'WV', wisconsin: 'WI',
+  wyoming: 'WY', 'puerto rico': 'PR',
+}
+
+// Nominatim jsonv2 row (addressdetails) → { label, lat, lng, street, city, state,
+// zip }. `ISO3166-2-lvl4` (e.g. "US-AZ") gives the 2-letter state code; falls back
+// to the full state name. Null for rows without coordinates.
+function nominatimToSuggestion(d) {
+  if (!d || d.lat == null || d.lon == null) return null
+  const a = d.address || {}
+  const street = [a.house_number, a.road].filter(Boolean).join(' ')
+  const city = a.city || a.town || a.village || a.hamlet || a.suburb || a.county || ''
+  const state = (a['ISO3166-2-lvl4'] || '').split('-')[1] || a.state || ''
+  return {
+    label: d.display_name,
+    lat: parseFloat(d.lat),
+    lng: parseFloat(d.lon),
+    street, city, state, zip: a.postcode || '',
+  }
+}
 
 // GET /elevation?lat=&lng=&radiusM=&n= — n×n elevation grid (metres) around a point
 // via Open-Elevation (open source, no key). Row 0 = NORTH (max lat), col 0 = WEST

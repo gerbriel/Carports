@@ -4,11 +4,16 @@ import * as THREE from 'three'
 import { OrbitControls, Html, Environment } from '@react-three/drei'
 import { useBuilderStore } from '../../store/builderStore'
 import Building from './scene/Building'
+import DiagnosticLabels, { SelectionMarker } from './scene/DiagnosticLabels'
+import DiagnosticPanel from './DiagnosticPanel'
 import SiteContext from './scene/SiteContext'
 import SiteFeatures from './scene/SiteFeatures'
 import Landscaping from './scene/Landscaping'
 import Vehicles from './scene/Vehicles'
 import Terrain from './scene/Terrain'
+import { useTerrainHeight } from './scene/terrainHeight'
+import { useRotateKeys } from './scene/useRotateKeys'
+import { RotateDonePill } from './scene/freeRotate'
 import { deriveStructure } from '../../data/structural'
 import { collarHalfX } from './scene/BuildingTrusses'
 import { getGroundTexture } from './scene/groundTexture'
@@ -50,6 +55,8 @@ function SitePlacement({ config }) {
   const satOn   = siteLoaded && config.terrainEnabled !== false && !!config.siteMap?.satUrl
   const enabled = siteLoaded && (config.siteMapEnabled || satOn)
   const placement = config.buildingPlacement ?? { x: 0, z: 0, rotation: 0 }
+  const heightAt  = useTerrainHeight()
+  const buildingY = heightAt(placement.x, placement.z)   // seat the build on terrain grade
   const setBuildingPlacement = useBuilderStore((s) => s.setBuildingPlacement)
   const setField             = useBuilderStore((s) => s.setField)
 
@@ -86,6 +93,7 @@ function SitePlacement({ config }) {
   const onDown = (e) => {
     if (!enabled) return
     e.stopPropagation()
+    if (config.rotatingBuilding) { setField('rotatingBuilding', false); return }   // click places the rotation
     const p = ground(e.clientX, e.clientY)
     if (!p) return
     grab.current = { dx: placeRef.current.x - p.x, dz: placeRef.current.z - p.z }
@@ -93,8 +101,46 @@ function SitePlacement({ config }) {
     setField('isDraggingBuilding', true)
   }
 
+  // Free-rotate mode (armed by the panel's "Rotate freely" button): the building
+  // follows the mouse around its centre — grab-style, relative to where the pointer
+  // started so it doesn't jump — until placed via the ✓ pill, a click, or Enter/Esc.
+  const rotStart = useRef(null)
+  useEffect(() => {
+    if (!config.rotatingBuilding) return
+    rotStart.current = null
+    setField('isDraggingBuilding', true)   // pause orbit so mouse travel only rotates
+    const norm = (r) => ((r % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)
+    const onMove = (e) => {
+      const p = ground(e.clientX, e.clientY)
+      if (!p) return
+      const a = Math.atan2(-(p.z - placeRef.current.z), p.x - placeRef.current.x)
+      if (!rotStart.current) rotStart.current = { a0: a, r0: placeRef.current.rotation || 0 }
+      setBuildingPlacement({ rotation: norm(rotStart.current.r0 + (a - rotStart.current.a0)) })
+    }
+    const onKey = (e) => { if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); setField('rotatingBuilding', false) } }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('keydown', onKey)
+      setField('isDraggingBuilding', false)
+    }
+  }, [config.rotatingBuilding]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Q/E (or ←/→) rotate the BUILDING when nothing else is selected — same keys as
+  // vehicles/props/equipment, so rotating works from any zoom without the panel slider.
+  useRotateKeys(
+    enabled && !config.rotatingBuilding && !config.selectedVehicleId && !config.selectedPropId && !config.selectedEquipmentId,
+    // Normalised to [0, 2π) so the panel's 0–359° "Rotate building" slider tracks it.
+    (d) => setBuildingPlacement({ rotation: (((placeRef.current.rotation || 0) + d) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) }),
+  )
+
   return (
-    <group position={[placement.x, 0, placement.z]} rotation={[0, placement.rotation, 0]} onPointerDown={onDown}>
+    <group position={[placement.x, buildingY, placement.z]} rotation={[0, placement.rotation, 0]} onPointerDown={onDown}>
+      {/* Free-rotate mode → ✓ pill floating above the roof to place the rotation */}
+      {config.rotatingBuilding && (
+        <RotateDonePill position={[0, config.height + 12, 0]} onDone={() => setField('rotatingBuilding', false)} />
+      )}
       {/* Prepared pad of the building's INSTALLATION SURFACE around the footprint —
           so a different Installation Surface vs. yard Ground Type reads clearly (e.g.
           a gravel pad on a lawn). Always in site-map mode (overrides the lot's
@@ -140,9 +186,17 @@ function getCameraPreset(preset, width, length, height) {
     case 'right':    return { pos: [ hw + dist * 0.55,    mid, 0                  ], target: [0, height * 0.4, 0] }
     case 'top':      return { pos: [0, height * 5 + 20, 0.01                      ], target: [0, 0, 0] }
     case 'interior': return { pos: [0, height * 0.5,     0                        ], target: [0, height * 1.6, 0] }
+    // Isometric-style diagnostic angle: equal 3/4 offset, lifted to read the
+    // exploded layers stacked along the vertical.
+    case 'iso':      return { pos: [dist * 1.15, height * 1.4 + dist * 1.0, -dist * 1.15], target: [0, height * 0.9, 0] }
     default:         return camFor(width, length, height)
   }
 }
+
+// How far the orbit pivot rises (ft, before size-scaling) at full explode — the
+// exploded diagram fans UP more than down (skin/trim high, foundation low), so we
+// lift the pivot toward the blown-apart model's centre to orbit around it cleanly.
+const EXPLODE_PIVOT_RISE = 8
 
 // ── Animated camera controller ────────────────────────────────────────────────
 function CameraController() {
@@ -154,6 +208,8 @@ function CameraController() {
   const requestPreset  = useBuilderStore((s) => s.requestCameraPreset)
   const flyMode        = useBuilderStore((s) => s.flyMode)
   const setField       = useBuilderStore((s) => s.setField)
+  const explodeAmount  = useBuilderStore((s) => s.explodeAmount)
+  const diagnosticMode = useBuilderStore((s) => s.diagnosticMode)
 
   const targetPos   = useRef(new THREE.Vector3())
   const targetLook  = useRef(new THREE.Vector3())
@@ -161,10 +217,12 @@ function CameraController() {
   const typeReady   = useRef(false)  // skip buildingType effect on mount
   const dimSkipped  = useRef(false)  // skip dimension effect on mount
   const dimTimer    = useRef(null)
+  const curRise     = useRef(0)      // explode pivot rise currently applied to the target
 
   function animateTo(pos, look) {
     targetPos.current.set(...pos)
-    targetLook.current.set(...look)
+    // Keep the explode pivot rise when re-framing so a preset/size change doesn't drop it.
+    targetLook.current.set(look[0], look[1] + curRise.current, look[2])
     animating.current = true
   }
 
@@ -204,6 +262,20 @@ function CameraController() {
 
   // Smooth lerp toward target each frame
   useFrame(() => {
+    // Pin the orbit pivot to the exploded model's centre. Applied as a DELTA so it
+    // rides on top of whatever the target is (preset / manual orbit / pan) without
+    // fighting them — only moves when the explode amount actually changes.
+    if (controls) {
+      const size = Math.max(1, Math.max(width, length) / 26)
+      const rise = (diagnosticMode ? explodeAmount : 0) * EXPLODE_PIVOT_RISE * size
+      const d = rise - curRise.current
+      if (Math.abs(d) > 1e-4) {
+        controls.target.y    += d
+        targetLook.current.y += d   // keep the in-flight animation destination in sync
+        curRise.current = rise
+        controls.update()
+      }
+    }
     if (!animating.current || !controls) return
     const SPEED = 0.09
     camera.position.lerp(targetPos.current, SPEED)
@@ -585,19 +657,19 @@ const VIEW_PRESETS = [
 
 function ViewPresetButtons() {
   const setField = useBuilderStore((s) => s.setField)
-  const flyMode  = useBuilderStore((s) => s.flyMode)
+  const panMode  = useBuilderStore((s) => s.panMode)
   return (
     <div className="absolute top-3 right-3 flex flex-col gap-1 z-10 hidden sm:flex">
       <button
-        onClick={() => setField('flyMode', !flyMode)}
+        onClick={() => setField('panMode', !panMode)}
         className={`rounded border px-2.5 py-1 text-[10px] font-semibold transition-colors backdrop-blur-sm ${
-          flyMode
-            ? 'bg-emerald-500/80 border-emerald-300 text-white'
+          panMode
+            ? 'bg-sky-500/80 border-sky-300 text-white'
             : 'bg-black/55 border-white/15 text-slate-300 hover:bg-black/75 hover:text-white'
         }`}
-        title="Free-roam: drag to look, W/A/S/D move, E/Q up/down, Shift to sprint"
+        title="Pan (hand) tool: left-drag slides the view instead of orbiting. Toggle off to orbit again."
       >
-        {flyMode ? '✓ Fly' : 'Fly'}
+        {panMode ? '✋ Pan' : 'Pan'}
       </button>
       {VIEW_PRESETS.map(({ id, label }) => (
         <button
@@ -621,9 +693,11 @@ export default function BuilderCanvas() {
     groundType,
     isDraggingDoor,
     flyMode,
+    panMode,
     showDimensions,
     showFootMarkers,
     showLabels,
+    diagnosticMode,
     siteMapEnabled,
     siteMap,
     isDraggingBuilding,
@@ -641,13 +715,21 @@ export default function BuilderCanvas() {
   const yard = groundType ?? installationSurface
   const { pos: camPos, target: camTarget } = camFor(width, length, height)
 
+  // Height that seats the building on the terrain — the overlays (dims/labels) ride
+  // along so they stay attached to the build on a sloped lot. 0 on flat ground.
+  const heightAt  = useTerrainHeight()
+  const buildingY = heightAt(config.buildingPlacement?.x ?? 0, config.buildingPlacement?.z ?? 0)
+
   return (
     <div className="relative w-full h-full">
       <Canvas
         camera={{ position: camPos, fov: 42, near: 0.1, far: 2000 }}
         shadows
         gl={{ antialias: true, preserveDrawingBuffer: true }}
-        onPointerMissed={() => config.selectedEquipmentId && config.setField('selectedEquipmentId', null)}
+        onPointerMissed={() => {
+          if (config.rotatingBuilding) config.setField('rotatingBuilding', false)   // click-away places the rotation
+          if (config.selectedEquipmentId) config.setField('selectedEquipmentId', null)
+        }}
       >
         <CameraController />
         <FlyController />
@@ -712,13 +794,16 @@ export default function BuilderCanvas() {
 
         {/* Overlays — follow the building's placement so labels stay attached on a site */}
         <group
-          position={[config.buildingPlacement?.x ?? 0, 0, config.buildingPlacement?.z ?? 0]}
+          position={[config.buildingPlacement?.x ?? 0, buildingY, config.buildingPlacement?.z ?? 0]}
           rotation={[0, config.buildingPlacement?.rotation ?? 0, 0]}
         >
           {showDimensions && <DimensionLines width={width} length={length} height={height} roofPitch={config.roofPitch} roofStyle={config.roofStyle} />}
           {showDimensions && <DirectionLabels width={width} length={length} height={height} />}
           {showFootMarkers && <FootMarkers width={width} length={length} />}
-          {showLabels && <PartLabels config={config} />}
+          {showLabels && !diagnosticMode && <PartLabels config={config} />}
+          {/* Parts view: highlight the selected instance/part in 3-D (no chips) */}
+          {showLabels && !diagnosticMode && <SelectionMarker config={config} />}
+          {diagnosticMode && <DiagnosticLabels config={config} />}
         </group>
 
         <OrbitControls
@@ -729,12 +814,25 @@ export default function BuilderCanvas() {
           maxDistance={350}
           enablePan
           screenSpacePanning            /* pan moves the view straight up/down on screen */
+          /* Pan (hand) tool: left-drag pans instead of orbiting; right-drag always pans. */
+          mouseButtons={{
+            LEFT: panMode ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE,
+            MIDDLE: THREE.MOUSE.DOLLY,
+            RIGHT: THREE.MOUSE.PAN,
+          }}
+          touches={{
+            ONE: panMode ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE,
+            TWO: THREE.TOUCH.DOLLY_PAN,
+          }}
           enableDamping
           dampingFactor={0.06}
           enabled={!isDraggingDoor && !flyMode && !isDraggingBuilding}
           makeDefault
         />
       </Canvas>
+
+      {/* Diagnostic legend + inspect — floats over canvas top-left */}
+      <DiagnosticPanel />
 
       {/* View preset buttons — floats over canvas top-right */}
       <ViewPresetButtons />

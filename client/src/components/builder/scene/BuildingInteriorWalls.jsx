@@ -31,8 +31,12 @@ function Panel({ geometry, position, rotation, mat }) {
 export default function BuildingInteriorWalls({
   width, length, height, ridgeHeight, roofStyle, wallColor, panelProfile = 'l5', structure, frameOnly,
   anchorType = 'pin', showAnchors = false,
+  hiddenInstances = {},
 }) {
   const walls   = useBuilderStore((s) => s.interiorWalls)
+  // Granular per-instance hide — ids mirrored by the diagnostic catalog
+  // (intWallPost:<wallId>:<i>, intWallRail:<wallId>, intWallPanel:<wallId>).
+  const hidden = (id) => hiddenInstances?.[id] === true
   const hw = width / 2, hl = length / 2
   const rise = ridgeHeight - height
   const rafterY = (x) => height + rise * (1 - Math.abs(x) / hw)
@@ -79,15 +83,18 @@ export default function BuildingInteriorWalls({
           return (
             <group key={w.id} position={[xc, 0, 0]}>
               {/* panel — plane faces ±X, runs along Z */}
-              {!frameOnly && (
+              {!frameOnly && !hidden(`intWallPanel:${w.id}`) && (
                 <Panel
                   geometry={new THREE.PlaneGeometry(length, topY)}
                   position={[0, topY / 2, 0]} rotation={[0, Math.PI / 2, 0]} mat={mat}
                 />
               )}
               {/* framing: base rail + posts to the roof (read in both views) */}
-              <TubeBox size={[M, M, length]} position={[0, M / 2, 0]} material={frameMat} />
+              {!hidden(`intWallRail:${w.id}`) && (
+                <TubeBox size={[M, M, length]} position={[0, M / 2, 0]} material={frameMat} />
+              )}
               {postZs.map((z, i) => (
+                hidden(`intWallPost:${w.id}:${i}`) ? null :
                 <TubeBox key={i} size={[M, topY, M]} position={[0, topY / 2, z]} material={frameMat} />
               ))}
               {/* anchors at the post feet (synced to the perimeter anchor rules) */}
@@ -102,7 +109,7 @@ export default function BuildingInteriorWalls({
         const postXs = frameSpan(width, endSp)
         return (
           <group key={w.id} position={[0, 0, zc]}>
-            {!frameOnly && (
+            {!frameOnly && !hidden(`intWallPanel:${w.id}`) && (
               <>
                 {/* lower rectangle (floor → eave) */}
                 <Panel geometry={new THREE.PlaneGeometry(width, height)} position={[0, height / 2, 0]} mat={mat} />
@@ -111,8 +118,11 @@ export default function BuildingInteriorWalls({
               </>
             )}
             {/* framing: base rail + posts rising to the gable profile */}
-            <TubeBox size={[width, M, M]} position={[0, M / 2, 0]} material={frameMat} />
+            {!hidden(`intWallRail:${w.id}`) && (
+              <TubeBox size={[width, M, M]} position={[0, M / 2, 0]} material={frameMat} />
+            )}
             {postXs.map((x, i) => {
+              if (hidden(`intWallPost:${w.id}:${i}`)) return null
               const h = rafterY(x) + LIFT
               return <TubeBox key={i} size={[M, h, M]} position={[x, h / 2, 0]} material={frameMat} />
             })}

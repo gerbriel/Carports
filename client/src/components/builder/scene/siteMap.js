@@ -46,6 +46,58 @@ export async function geocodeAddress(address) {
   return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), label: data[0].display_name }
 }
 
+// Address prefix → up to 5 candidate matches for the autocomplete dropdown. Each
+// candidate carries lat/lng plus the address split into street/city/state/zip, so
+// selecting one places the site directly (no second geocode, no "not found" miss).
+// Server-first (/api/geocode/suggest → Nominatim with a proper User-Agent) with a
+// direct browser Nominatim fallback so it still works key-free on a static deploy.
+// Callers should debounce this (OSM's usage policy discourages per-keystroke calls).
+export async function suggestAddresses(query, { signal } = {}) {
+  const q = query.trim()
+  if (q.length < 4) return []
+
+  // 1) Server suggester
+  try {
+    const r = await fetch(`/api/geocode/suggest?q=${encodeURIComponent(q)}`, { signal })
+    if (r.ok) {
+      const d = await r.json()
+      if (Array.isArray(d?.suggestions)) return d.suggestions
+    }
+  } catch (e) {
+    if (e?.name === 'AbortError') throw e
+    // network error / no backend → fall through to the browser fallback
+  }
+
+  // 2) Direct Nominatim fallback (browser)
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&countrycodes=us&q=${encodeURIComponent(q)}`
+    const res = await fetch(url, { headers: { Accept: 'application/json' }, signal })
+    if (!res.ok) return []
+    const data = await res.json()
+    return Array.isArray(data) ? data.map(parseNominatimSuggestion).filter(Boolean) : []
+  } catch (e) {
+    if (e?.name === 'AbortError') throw e
+    return []
+  }
+}
+
+// Nominatim jsonv2 row (with addressdetails) → { label, lat, lng, street, city,
+// state, zip }. `ISO3166-2-lvl4` (e.g. "US-AZ") gives the 2-letter state code the
+// form expects; falls back to the full state name. Returns null for rows w/o coords.
+export function parseNominatimSuggestion(d) {
+  if (!d || d.lat == null || d.lon == null) return null
+  const a = d.address || {}
+  const street = [a.house_number, a.road].filter(Boolean).join(' ')
+  const city = a.city || a.town || a.village || a.hamlet || a.suburb || a.county || ''
+  const state = (a['ISO3166-2-lvl4'] || '').split('-')[1] || a.state || ''
+  return {
+    label: d.display_name,
+    lat: parseFloat(d.lat),
+    lng: parseFloat(d.lon),
+    street, city, state, zip: a.postcode || '',
+  }
+}
+
 export { FT_PER_M }
 
 // Esri "World Imagery" satellite export for a square-in-metres patch around the

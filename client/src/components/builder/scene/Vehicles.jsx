@@ -1,7 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import * as THREE from 'three'
 import { Html } from '@react-three/drei'
 import { useBuilderStore } from '../../../store/builderStore'
+import { useTerrainHeight } from './terrainHeight'
+import { useRotateKeys } from './useRotateKeys'
+import { useFreeRotate, RotatePlane, RotateDonePill } from './freeRotate'
 
 // ── Scale-reference vehicles ─────────────────────────────────────────────────
 // Procedural low-poly vehicles built from primitive solids. EVERY dimension is in
@@ -265,14 +268,14 @@ const RENDER = {
 
 export const vehicleMeta = (id) => VEHICLE_TYPES.find((v) => v.id === id)
 
-// One placed vehicle — click to select / start drag.
-function Vehicle({ item, selected, onSelect, onDragStart }) {
+// One placed vehicle — click to select / start drag. `y` seats it on the terrain.
+function Vehicle({ item, y = 0, selected, onSelect, onDragStart }) {
   const Body = RENDER[item.type] ?? Sedan
   const meta = vehicleMeta(item.type)
   const ringR = (Math.max(meta?.l ?? 16, meta?.w ?? 6) / 2) + 1.5
   return (
     <group
-      position={[item.x, 0, item.z]}
+      position={[item.x, y, item.z]}
       rotation={[0, item.rotation ?? 0, 0]}
       onPointerDown={(e) => { e.stopPropagation(); onSelect(item.id); onDragStart(item.id) }}
     >
@@ -297,18 +300,29 @@ export default function Vehicles() {
   const selectedId    = useBuilderStore((s) => s.selectedVehicleId)
   const setField      = useBuilderStore((s) => s.setField)
 
+  const heightAt = useTerrainHeight()
   const [dragId, setDragId] = useState(null)
   const placingVehicle = placing?.category === 'vehicle'
 
-  const onDragStart = (id) => { setDragId(id); setField('isDraggingBuilding', true) }
+  const rot = useFreeRotate()
+  const rotItem = rot.rotId != null ? items.find((v) => v.id === rot.rotId) : null
+  // Exit rotate mode if the vehicle is deselected / deleted / replaced meanwhile.
+  useEffect(() => {
+    if (rot.rotId != null && selectedId !== rot.rotId) rot.done()
+  }, [rot.rotId, selectedId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const onDragStart = (id) => { if (rot.rotId != null) return; setDragId(id); setField('isDraggingBuilding', true) }
   const onDragEnd   = () => { if (dragId != null) { setDragId(null); setField('isDraggingBuilding', false) } }
 
   const sel = items.find((v) => v.id === selectedId)
 
+  // Q/E (or ←/→) rotate the selected vehicle from ANY zoom.
+  useRotateKeys(!!sel && rot.rotId == null, (d) => useBuilderStore.getState().setVehicleField(sel.id, 'rotation', (sel.rotation ?? 0) + d))
+
   return (
     <group>
       {items.map((item) => (
-        <Vehicle key={item.id} item={item} selected={selectedId === item.id} onSelect={selectVehicle} onDragStart={onDragStart} />
+        <Vehicle key={item.id} item={item} y={heightAt(item.x, item.z)} selected={selectedId === item.id} onSelect={selectVehicle} onDragStart={onDragStart} />
       ))}
 
       {/* Click-to-place catch plane — only while placing a vehicle */}
@@ -331,12 +345,24 @@ export default function Vehicles() {
         </mesh>
       )}
 
-      {/* Floating controls above the selected vehicle: rotate 45° + delete */}
-      {sel && dragId == null && (
-        <Html position={[sel.x, 12, sel.z]} center occlude={false} zIndexRange={[120, 0]}>
+      {/* Free-rotate mode: vehicle follows the mouse; ✓ / ground click / Enter places it */}
+      {rotItem && (
+        <>
+          <RotatePlane
+            onMove={(px, pz) => useBuilderStore.getState().setVehicleField(rotItem.id, 'rotation', rot.track(rotItem.x, rotItem.z, rotItem.rotation ?? 0, px, pz))}
+            onDone={rot.done}
+          />
+          <RotateDonePill position={[rotItem.x, heightAt(rotItem.x, rotItem.z) + 14, rotItem.z]} onDone={rot.done} />
+        </>
+      )}
+
+      {/* Floating controls above the selected vehicle: free rotate + delete */}
+      {sel && dragId == null && rot.rotId == null && (
+        <Html position={[sel.x, heightAt(sel.x, sel.z) + 12, sel.z]} center occlude={false} zIndexRange={[120, 0]}>
           <div style={{ display: 'flex', gap: 4 }}>
             <button
-              onClick={() => useBuilderStore.getState().setVehicleField(sel.id, 'rotation', (sel.rotation ?? 0) + Math.PI / 4)}
+              title="Free rotate — the vehicle follows your mouse; click ✓ or the ground to place. (Q/E nudge 15°)"
+              onClick={() => rot.begin(sel.id)}
               style={{ background: 'rgba(15,23,42,0.95)', color: '#bae6fd', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 4, fontSize: 10, padding: '2px 8px', cursor: 'pointer', whiteSpace: 'nowrap' }}
             >Rotate</button>
             <button

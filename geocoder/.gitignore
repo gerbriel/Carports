@@ -1,0 +1,5 @@
+# Photon runtime artifacts — never commit the multi-GB index or the jar.
+photon-*.jar
+photon-db-*.tar.bz2
+photon_data/
+photon.log

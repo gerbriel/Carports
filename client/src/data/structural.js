@@ -1,3 +1,5 @@
+import { lookupFrameSpacing } from './frameSpacing'
+
 // ── Structural package derivation ─────────────────────────────────────────────
 // Decides which leg type, truss type, frame spacing and bracing a building needs
 // from its size + rating. Thresholds reflect common all-steel tube-building
@@ -76,7 +78,18 @@ export function isFullyClosed(style) {
     (typeof style === 'string' && style.startsWith('extended_gable_'))
 }
 
-// ── Design-load schedules (from QMC / A&A Engineering stamped plan sets) ───────
+// A wall is "partially enclosed" when it carries SOME cladding but is NOT sheeted
+// to the ground — the top-N bands (hang from the eave) and the fractional closures
+// (¼ / ½ / ¾). Its end-wall posts stop short of the ground / aren't ground-anchored,
+// which is exactly the case the stamped plans require the GABLE BRACE [20] for
+// (Sheet 8-A). Open walls have no cladding; fully-closed walls are ground-anchored;
+// neither gets the gable brace.
+export function isPartiallyEnclosed(style) {
+  if (typeof style !== 'string' || style === 'open') return false
+  return !isFullyClosed(style)
+}
+
+// ── Design-load schedules (from the stamped generic plan sets) ────────────────
 // Tables are indexed [snowRow][windCol]. Values are member SPACINGS in inches
 // (0 = combo not permitted → needs site-specific engineering).
 //
@@ -85,26 +98,21 @@ export const SNOW_ROWS = [30, 40, 50, 60, 70, 80, 90]
 // Column axis — DESIGN WIND SPEED (MPH, Vult, Exposure C):
 export const WIND_COLS = [105, 115, 130, 140, 155, 165, 180]
 
-// TABLE 4 — FRAME SPACING (in.), eave 10–12′ band, ENCLOSED buildings
-const FRAME_ENCLOSED = [
-  [60, 60, 54, 54, 42, 42, 36],
-  [48, 48, 42, 42, 42, 42, 36],
-  [40, 40, 40, 40, 40, 40, 36],
-  [36, 36, 36, 36, 36, 36, 36],
-  [30, 30, 30, 30, 30, 30, 30],
-  [24, 24, 24, 24, 24, 24, 24],
-  [ 0,  0,  0,  0,  0,  0,  0],   // 90/61 — not permitted (custom eng. req'd)
-]
-// TABLE 4 — FRAME SPACING (in.), OPEN buildings (carry higher wind pressure)
-const FRAME_OPEN = [
-  [48, 48, 48, 42, 36, 36, 30],
-  [42, 42, 42, 42, 36, 36, 30],
-  [30, 30, 30, 30, 30, 30, 30],
-  [30, 30, 30, 30, 30, 30, 24],
-  [24, 24, 24, 24, 24, 24, 24],
-  [24, 24, 18, 18, 18, 18, 18],
-  [ 0,  0,  0,  0,  0,  0,  0],
-]
+// Two width regimes (see ENGINEERING-SPEC §1/§4):
+//  • CHART_MAX_WIDTH (30′): the generic Table-4 frame-spacing charts stop at 30′;
+//    wider buildings have no chart → snow-driven widespan spacing.
+//  • TRUSS_MIN_WIDTH (40′): the stamped plans use a PEAK-BRACE bent up to ~60′
+//    wide and reserve the triangulated (bottom-chord + web) truss + square-tube
+//    secondary members for the widest spans. Below this, frames are peak-brace
+//    bents with hat-channel purlins and single/double posts.
+export const CHART_MAX_WIDTH = 30
+export const TRUSS_MIN_WIDTH = 40
+
+// TABLE 4 — FRAME SPACING now lives in ./frameSpacing.js (auto-generated from the
+// stamped generic plans): the FULL chart set — widths 12/18/20/22/24/30 × three
+// eave-height bands (≤6′ / 7–9′ / 10–12′) × ENCLOSED/OPEN × load × wind, with the
+// vertical-sheathing (higher) value and '---' not-permitted cells preserved.
+// (The old single hard-coded 10–12′ band was replaced — see lookupFrameSpacing.)
 // TABLE 5.1 — PURLIN SPACING (in.), 18GA hat channel, keyed by FRAME SPACING
 // block (in.) then [snow row][wind col]. We model 18ga ONLY (the 4.25×1.5 hat we
 // build); the heavier 14ga column from the sheet is intentionally not encoded.
@@ -219,16 +227,28 @@ export function webPanelsFor(width) {
 // 14ga is thinner steel than 12ga → thinner tube wall.
 export const TUBE_WALL = { 14: 0.028, 12: 0.05 }
 
+// Table 8-A.1 — max end-wall post spacing (ft) by wind speed × eave-height band
+// (≤7′ / 8–9′ / 10–12′). Kept identical to the material calculator so both agree.
+export function endPostSpacingFt(windSpeed, eaveHeight) {
+  const band = eaveHeight <= 7 ? 0 : eaveHeight <= 9 ? 1 : 2
+  const rows = [
+    [105, [5, 5, 5]], [115, [5, 5, 4.5]], [130, [4.5, 4.5, 4]],
+    [140, [4.5, 4.5, 3]], [155, [4, 4, 2.5]], [999, [3.5, 3, 2]],
+  ]
+  for (const [w, vals] of rows) if (windSpeed <= w) return vals[band]
+  return 2
+}
+
 export function deriveStructure({
-  width, height, gauge, certification, bracingType, extraOptions,
-  walls, groundSnow = 30, windSpeed = 105,
+  width, length = 0, height, gauge, certification, bracingType, extraOptions,
+  walls, groundSnow = 30, windSpeed = 105, roofStyle, legStyle, extraTrussCount = 0,
 } = {}) {
   const certified     = certification === 'local_code'
   const heavy         = certified || gauge === 12
-  const extraTrusses  = !!extraOptions?.extraTrusses
+  const extraPurlins  = !!extraOptions?.extraPurlins
 
-  // Widespan = over 30′ wide (per QMC convention)
-  const widespan = width > 30
+  const widespan   = width > CHART_MAX_WIDTH   // >30′: no generic chart → built-up legs + triangulated truss
+  const heavyTruss = width > TRUSS_MIN_WIDTH   // >40′: triangulated truss switches single → doubled
 
   // ── Design loads → spacing schedules (Tables 4 / 5.1 / 5.2) ─────────────────
   // Enclosed = all four walls a closed style; otherwise treated as open (higher
@@ -237,46 +257,64 @@ export function deriveStructure({
   const enclosed = wallVals.length > 0 && wallVals.every((w) => w && w !== 'open')
   const r = rowIdx(groundSnow)
   const c = colIdx(windSpeed)
-  const loadAllowed   = (enclosed ? FRAME_ENCLOSED : FRAME_OPEN)[r]?.[c] > 0
-  // Widespan trusses follow their own snow schedule (8′6″ @ 30 PSF); narrower
-  // buildings use Table 4.
-  let   frameSpacing  = (width > 30)
-    ? widespanTrussSpacing(groundSnow)
-    : (spacingFt(enclosed ? FRAME_ENCLOSED : FRAME_OPEN, r, c) ?? 2.0)
+  // Frame spacing from the FULL Table 4 (by width × eave band × enclosure × load ×
+  // wind). The higher of a "54/60" cell is only allowed with vertical roof
+  // sheathing. '---' cells → not permitted (loadAllowed=false). Widespan (>30′)
+  // has no generic chart → its own snow-driven truss schedule.
+  const vertical = roofStyle === 'a_frame_vertical'
+  let frameSpacing, loadAllowed
+  if (widespan) {
+    frameSpacing = widespanTrussSpacing(groundSnow)
+    loadAllowed  = true
+  } else {
+    const fs = lookupFrameSpacing({ width, enclosed, eaveHeight: height, groundSnow, windSpeed, vertical })
+    loadAllowed  = fs?.permitted ?? false
+    frameSpacing = fs?.spacingFt ?? 2.0   // not-permitted → fall back to tightest (2′) so the model still renders
+  }
   // Purlin (18ga) + girt spacing both key off the frame-spacing block (Tables
   // 5.1 / 5.2), with load (snow×wind) on top for purlins and wind for girts.
   const fblk          = frameBlock(frameSpacing)
-  const purlinSpacing = spacingFt(PURLIN_18[fblk], r, c) ?? 2.0
+  let   purlinSpacing = spacingFt(PURLIN_18[fblk], r, c) ?? 2.0
+  if (extraPurlins) purlinSpacing = Math.min(purlinSpacing, 1.5) // "Extra Purlins" → tighten to ≤18″
   const girtSpacing   = (GIRT_BY_FRAME[fblk]?.[c] ?? 24) / 12
 
   // ── Legs ──────────────────────────────────────────────────────────────────
-  // Widespan (>30′): ladder column, or zig-zag when extra tall (14′+).
-  // ≤30′ wide: over 12′ eave → double leg; heavy-duty (12 ga / certified) also
-  // doubles; otherwise a single standard post.
-  let legType = 'standard'
-  if (widespan)            legType = height >= 14 ? 'zigzag' : 'ladder'
-  else if (height > 12)    legType = 'double'
-  else if (heavy)          legType = 'double'
+  // >30′ wide → built-up column: ladder, or zig-zag when tall (≥14′). ≤30′: double
+  // for tall (>12′) or heavy-duty (12ga / certified), else a single standard post.
+  // The Leg Style picker overrides this (Auto = the logic below).
+  let legType =
+    widespan                 ? (height >= 14 ? 'zigzag' : 'ladder')
+    : (height > 12 || heavy) ? 'double'
+    : 'standard'
+  if (legStyle && legStyle !== 'auto') legType = legStyle === 'single' ? 'standard' : legStyle
 
   // ── Trusses ─────────────────────────────────────────────────────────────────
-  // Widespan (or certified mid-spans) need paired trusses.
+  // >30′ → triangulated (A-frame web) truss. Single truss up to 40′; above 40′ it
+  // switches to a DOUBLED (paired) truss. Certified mid-spans also pair.
   const trussType =
-    (widespan || (certified && width >= 26)) ? 'double' : 'single'
+    (heavyTruss || (certified && width >= 26)) ? 'double' : 'single'
   const webPanels = webPanelsFor(width)
 
   // ── Frame spacing on-centre (ft) ────────────────────────────────────────────
   // Driven by the load schedule above (widespan uses its own snow schedule);
-  // certified / extra-truss buildings tighten it further, never looser.
+  // certified buildings tighten it further, never looser.
   let spacing = frameSpacing
-  if (certified || extraTrusses) spacing = Math.min(spacing, 4)
+  if (certified) spacing = Math.min(spacing, 4)
+  // Manual extra trusses: tighten spacing so the frame count grows by extraTrussCount,
+  // independent of the load-driven schedule above.
+  if (extraTrussCount > 0 && length > 0) {
+    const baseFrames = Math.max(2, Math.ceil(length / spacing) + 1)
+    spacing = length / (baseFrames - 1 + extraTrussCount)
+  }
 
   // ── Sway / diagonal bracing ────────────────────────────────────────────────
-  // A CERTIFIED (local-code) building always carries diagonal sway braces — the
-  // only way to remove them is to mark the building UNCERTIFIED. Uncertified
-  // buildings then leave bracing to the user's Side-Bracing toggle (still
-  // recommended on widespan/tall builds). Same in frame-only and clad views.
-  const bracingMandatory   = certified
-  const bracingRecommended = widespan || height >= 11
+  // A CERTIFIED (local-code) building always carries diagonal sway braces, AND the
+  // plans require diagonal bracing whenever the design wind speed is ≥ 140 mph — so
+  // that auto-triggers it too, regardless of certification. Otherwise it's left to
+  // the user's Side-Bracing toggle (still recommended on widespan/tall/snowy builds).
+  const highWind           = windSpeed >= 140
+  const bracingMandatory   = certified || highWind
+  const bracingRecommended = widespan || height >= 11 || groundSnow >= 30
   const bracing            = (bracingMandatory || bracingType === 'diagonal') ? 'diagonal' : 'none'
 
   // Tube spacing of a built-up (multi-tube) leg — used so the truss eave can
@@ -286,10 +324,11 @@ export function deriveStructure({
 
   // ── End-wall posts ──────────────────────────────────────────────────────────
   // Closed end walls get intermediate column posts: single under 13′ eave,
-  // double (two tubes welded, no cross bracing) at 13′+. These are non-structural
-  // infill (they frame the sheeting), so space them ~5′ o.c.
+  // double (two tubes welded, no cross bracing) at 13′+. Spacing follows the
+  // stamped Table 8-A.1 (max end-post spacing by wind speed × eave-height band):
+  // 5′ at low wind down to 2′ at 165–180 mph / tall eaves.
   const endLegType     = height >= 13 ? 'double' : 'standard'
-  const endPostSpacing = 5
+  const endPostSpacing = endPostSpacingFt(windSpeed, height)
 
   // Reason strings for the UI readout — explains *why* each part was chosen.
   const reasons = {
@@ -305,7 +344,7 @@ export function deriveStructure({
     purlin:  `${Math.round(purlinSpacing * 12)}″ o.c. (18ga hat)`,
     girt:    `${Math.round(girtSpacing * 12)}″ o.c.`,
     bracing: bracing === 'diagonal'
-      ? (bracingMandatory ? 'required (certified)' : 'selected')
+      ? (highWind ? `required (${windSpeed} mph ≥ 140)` : certified ? 'required (certified)' : 'selected')
       : (bracingRecommended ? 'off — recommended' : 'not required'),
   }
 

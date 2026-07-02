@@ -3,13 +3,14 @@ import * as THREE from 'three'
 import { GABLE_OH, TRUSS_OH, roofLift } from './BuildingTrusses'
 import { isFullyClosed } from '../../../data/structural'
 import { panelFinish } from '../../../data/builderData'
+import { useExplode } from './useExplode'
+import { pieceExplode } from '../../../data/explode'
+import { Inspectable } from './pieceInspectCore'
 
 // Painted-steel trim: matte. Galvalume trim → polished bare-metal (chrome), the
 // same finish the wall/roof panels use, so the look carries through to the trim.
 const TRIM_MATTE = { roughness: 0.35, metalness: 0.6 }
 
-const TR = 0.12  // trim face width ft ≈ 1.5 in
-const T2 = TR * 2
 const CLAD = 0.13      // matches BuildingWalls — trim rides on the outboard panels
 const ROOF_OH = GABLE_OH  // matches BuildingRoof — panels + ridge cap overhang the gable ends 6″
 // Skin lift above the rafters — matches BuildingRoof; width-aware (>30′ rides higher
@@ -433,12 +434,27 @@ export function LTrimRun({ apex, run, inboard, up, length, mat, scale = 1 }) {
   )
 }
 
-export default function TrimMesh({ width, length, height, roofStyle, ridgeHeight, color, roofColor, walls, leanTos, vis }) {
+export default function TrimMesh({ width, length, height, roofStyle, ridgeHeight, color, roofColor, walls, leanTos, vis, hiddenInstances = {} }) {
   const hw = width / 2 + CLAD
   const hl = length / 2 + CLAD
   const w  = walls ?? {}
   const lt = leanTos ?? {}
   const v  = (k) => (vis?.[k] !== false)   // per-trim-part visibility (Components panel)
+  // Per-instance: 'eaveTrim:<side>', 'cornerTrim:<i>', 'ridgeCap:0'.
+  const hidden = (id) => hiddenInstances[id] === true
+
+  // Per-piece explode: each trim stick rides highest, at the 'trim' layer, fanning
+  // out from the centroid so it separates from the skin. amount 0 → [0,0,0]. Also
+  // hosts hover-inspect (id/label) so a trim piece shows its tooltip on hover.
+  const { amount, maxDim } = useExplode()
+  const Toff = ({ at, id, label, children }) => {
+    const o = pieceExplode(at, 'trim', amount, maxDim)
+    return (
+      <group position={o}>
+        <Inspectable id={id} label={label} at={at}>{children}</Inspectable>
+      </group>
+    )
+  }
 
   const mat = useMemo(
     () => new THREE.MeshStandardMaterial({ color, ...(panelFinish(color) ?? TRIM_MATTE) }),
@@ -467,6 +483,7 @@ export default function TrimMesh({ width, length, height, roofStyle, ridgeHeight
             the hat channel — not on the wall panels. Other styles: plain eave box. ── */}
       {v('eaveTrim') && ['left', 'right'].map((side) => {
         if (w[side] === 'open') return null
+        if (hidden(`eaveTrim:${side}`)) return null
         // A CONTINUOUS lean-to carries the roof past this eave as one plane —
         // there's no eave here, so no eave trim.
         if (lt[side]?.enabled && lt[side]?.roofConnection === 'continuous') return null
@@ -485,19 +502,31 @@ export default function TrimMesh({ width, length, height, roofStyle, ridgeHeight
           const cz = Math.cos(eavePitch), sp = Math.sin(eavePitch)
           const DROP = 0.07, EAVE_NUDGE = 0.05
           return (
-            <BoxedEaveRun key={side}
-              apex={[sx * (eaveXMag + EAVE_NUDGE), eaveYv - DROP, -(length / 2 + GABLE_OH)]}
-              run={[0, 0, 1]}
-              inboard={[-sx * cz, sp, 0]}    // top face follows the slope toward the ridge
-              up={[sx * sp, cz, 0]}          // panel normal (up-and-out)
-              length={length + GABLE_OH * 2}
-              mat={mat} />
+            <Toff key={side} id="eaveTrim" label={`${side} Eave Trim`} at={[sx * eaveXMag, eaveYv, 0]}>
+              <BoxedEaveRun
+                apex={[sx * (eaveXMag + EAVE_NUDGE), eaveYv - DROP, -(length / 2 + GABLE_OH)]}
+                run={[0, 0, 1]}
+                inboard={[-sx * cz, sp, 0]}    // top face follows the slope toward the ridge
+                up={[sx * sp, cz, 0]}          // panel normal (up-and-out)
+                length={length + GABLE_OH * 2}
+                mat={mat} />
+            </Toff>
           )
         }
+        // Regular (rounded-bow) roof: no overhang, so a plain formed eave/box "L"
+        // caps the top of the side wall — one leg lapping INBOARD onto the roof, one
+        // leg dripping DOWN over the wall-top/panel edge (per spec C.2), instead of a
+        // flat box. Sits just proud of the outboard panel plane.
         return (
-          <mesh key={side} position={[sx * hw, height - TR / 2, 0]} material={mat}>
-            <boxGeometry args={[T2, TR, length]} />
-          </mesh>
+          <Toff key={side} id="eaveTrim" label={`${side} Eave Trim`} at={[sx * hw, height, 0]}>
+            <LTrimRun
+              apex={[sx * hw, height, -length / 2]}
+              run={[0, 0, 1]}
+              inboard={[-sx, 0, 0]}   // top leg laps inboard onto the roof
+              up={[0, 1, 0]}          // second leg drips down over the wall (−Y)
+              length={length}
+              mat={mat} />
+          </Toff>
         )
       })}
 
@@ -510,6 +539,7 @@ export default function TrimMesh({ width, length, height, roofStyle, ridgeHeight
               closed wall's exposed panel edge.
             • both open → no trim (no panel to finish). */}
       {v('cornerTrim') && CORNERS.map((c, i) => {
+        if (hidden(`cornerTrim:${i}`)) return null
         const side = c.sx < 0 ? 'left'  : 'right'
         const end  = c.sz < 0 ? 'front' : 'back'
         // Lean-to on either adjoining wall → corner is internal to the wing.
@@ -517,12 +547,13 @@ export default function TrimMesh({ width, length, height, roofStyle, ridgeHeight
         const sideClosed = isFullyClosed(w[side])
         const endClosed  = isFullyClosed(w[end])
         const ry = cornerRy(c.sx, c.sz)
+        const at = [c.sx * hw, height / 2, c.sz * hl]
         if (sideClosed && endClosed)
-          return <CornerTrim key={i} x={c.sx * hw} z={c.sz * hl} ry={ry} top={height} mat={mat} />
+          return <Toff key={i} id="cornerTrim" label="Corner Trim" at={at}><CornerTrim x={c.sx * hw} z={c.sz * hl} ry={ry} top={height} mat={mat} /></Toff>
         if (sideClosed || endClosed) {
           // One wall MISSING (open) at this corner → finish the closed wall's exposed
           // panel edge with a plain L-trim (not the wrap-around corner trim).
-          return <LTrim key={i} x={c.sx * hw} z={c.sz * hl} ry={ry} top={height} mat={mat} />
+          return <Toff key={i} id="cornerTrim" label="Corner Trim" at={at}><LTrim x={c.sx * hw} z={c.sz * hl} ry={ry} top={height} mat={mat} /></Toff>
         }
         return null
       })}
@@ -564,8 +595,10 @@ export default function TrimMesh({ width, length, height, roofStyle, ridgeHeight
           const dx   = -sx * (hwR + e), dyv = rise * k       // extended eave → peak
           const up   = dx > 0 ? [-dyv, dx, 0] : [dyv, -dx, 0]   // ⟂ to the rake, toward the skin
           return (
-            <BoxedEaveRun key={`${side}-${slope}`} apex={[apexX, apexY, z]} run={[dx, dyv, 0]}
-              inboard={[0, 0, -sz]} up={up} length={rakeLen * k} mat={mat} />
+            <Toff key={`${side}-${slope}`} id="eaveTrim" label={`${side} Rake Trim`} at={[apexX / 2, (apexY + ridgeHeight) / 2, z]}>
+              <BoxedEaveRun apex={[apexX, apexY, z]} run={[dx, dyv, 0]}
+                inboard={[0, 0, -sz]} up={up} length={rakeLen * k} mat={mat} />
+            </Toff>
           )
         })
       })}
@@ -583,13 +616,15 @@ export default function TrimMesh({ width, length, height, roofStyle, ridgeHeight
         if (!isFullyClosed(w[side]) || !isFullyClosed(w[end])) return null
         const FOLD = 0.5   // ~6″ wrapped around the corner
         return (
-          <BoxedEaveRun key={`fold-${i}`}
-            apex={[c.sx * eaveXMag, eaveYv, c.sz * eaveZMag]}
-            run={[-c.sx * FOLD, 0, 0]}     // 6″ inboard along the end wall (X)
-            inboard={[0, 0, -c.sz]}         // across the strut, toward the building (Z)
-            up={[0, 1, 0]}
-            length={FOLD}
-            mat={mat} />
+          <Toff key={`fold-${i}`} id="eaveTrim" label="Eave Corner Fold" at={[c.sx * eaveXMag, eaveYv, c.sz * eaveZMag]}>
+            <BoxedEaveRun
+              apex={[c.sx * eaveXMag, eaveYv, c.sz * eaveZMag]}
+              run={[-c.sx * FOLD, 0, 0]}     // 6″ inboard along the end wall (X)
+              inboard={[0, 0, -c.sz]}         // across the strut, toward the building (Z)
+              up={[0, 1, 0]}
+              length={FOLD}
+              mat={mat} />
+          </Toff>
         )
       })}
 
@@ -599,8 +634,10 @@ export default function TrimMesh({ width, length, height, roofStyle, ridgeHeight
       {/* ── Ridge cap: A-Frame styles only. Extruded from a 14″ strip bent to the
             roof pitch, run in ≤11′ lapped pieces over the lifted skin, overhanging
             the gable ends flush with the roof panels (which overhang by ROOF_OH). ── */}
-      {v('ridgeCap') && roofStyle !== 'regular' && (
-        <RidgeCap width={width} length={length} height={height} ridgeHeight={ridgeHeight} mat={capMat} />
+      {v('ridgeCap') && roofStyle !== 'regular' && !hidden('ridgeCap:0') && (
+        <Toff id="ridgeCap" label="Ridge Cap" at={[0, ridgeHeight + roofLift(width), 0]}>
+          <RidgeCap width={width} length={length} height={height} ridgeHeight={ridgeHeight} mat={capMat} />
+        </Toff>
       )}
     </group>
   )

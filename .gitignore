@@ -36,3 +36,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Internal engineering spec + extracted plan data (derived from proprietary stamped plans — do not publish)
+/engineering/

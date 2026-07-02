@@ -74,6 +74,20 @@ services:
       - qmc-net
 
   ###############################################################################
+  # ENGINEERING SERVICE — FastAPI design brain (ASCE 7 loads + member checks + BOM)
+  # Draft engineering basis for tube-framed buildings; requires licensed-PE review.
+  ###############################################################################
+  engineering-service:
+    build:
+      context: ./engineering-service
+      dockerfile: Dockerfile
+    <<: *restart
+    ports:
+      - "127.0.0.1:8100:8000"
+    networks:
+      - qmc-net
+
+  ###############################################################################
   # PLAUSIBLE ANALYTICS — self-hosted, cookie-free alternative to Google Analytics
   # Docs: https://github.com/plausible/community-edition
   # Access: http://analytics.qualitymetalcarportsca.com

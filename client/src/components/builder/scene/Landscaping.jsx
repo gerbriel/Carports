@@ -1,7 +1,10 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import * as THREE from 'three'
 import { Html } from '@react-three/drei'
 import { useBuilderStore } from '../../../store/builderStore'
+import { useTerrainHeight } from './terrainHeight'
+import { useRotateKeys } from './useRotateKeys'
+import { useFreeRotate, RotatePlane, RotateDonePill } from './freeRotate'
 
 // ── Procedural low-poly site props ────────────────────────────────────────────
 // Built from primitive solids with flat shading so they read as stylised low-poly
@@ -124,13 +127,13 @@ export function drawTransform(type, sx, sz, ex, ez) {
 
 // One placed prop — click to select / drag to reposition. Fences & driveways are
 // created at their drawn length/orientation (see the draw flow below).
-function Prop({ item, selected, onSelect, onDragStart }) {
+function Prop({ item, y = 0, selected, onSelect, onDragStart }) {
   const Body = RENDER[item.type] ?? RoundTree
   const r = propMeta(item.type).selR ?? 4
   const len = item.length ?? DEFAULT_LEN[item.type]
   return (
     <group
-      position={[item.x, 0, item.z]}
+      position={[item.x, y, item.z]}
       rotation={[0, item.rotation ?? 0, 0]}
       scale={item.scale ?? 1}
       onPointerDown={(e) => { e.stopPropagation(); onSelect(item.id); onDragStart(item.id) }}
@@ -171,12 +174,20 @@ export default function Landscaping() {
   const setField   = useBuilderStore((s) => s.setField)
 
   const placeDrawnProp = useBuilderStore((s) => s.placeDrawnProp)
+  const heightAt = useTerrainHeight()
   const [dragId, setDragId] = useState(null)
   const [draw, setDraw] = useState(null)   // { sx, sz, ex, ez } while drawing a run
   const placingProp = placing?.category === 'prop'
   const drawType = placingProp && propMeta(placing.propType).draw ? placing.propType : null
 
-  const onDragStart = (id) => { setDragId(id); setField('isDraggingBuilding', true) }
+  const rot = useFreeRotate()
+  const rotItem = rot.rotId != null ? items.find((p) => p.id === rot.rotId) : null
+  // Exit rotate mode if the prop is deselected / deleted / replaced meanwhile.
+  useEffect(() => {
+    if (rot.rotId != null && selectedId !== rot.rotId) rot.done()
+  }, [rot.rotId, selectedId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const onDragStart = (id) => { if (rot.rotId != null) return; setDragId(id); setField('isDraggingBuilding', true) }
   const onDragEnd   = () => { if (dragId != null) { setDragId(null); setField('isDraggingBuilding', false) } }
 
   // Draw flow: pointer DOWN sets the start; MOVE updates the end (live preview);
@@ -194,11 +205,15 @@ export default function Landscaping() {
   }
 
   const sel = items.find((p) => p.id === selectedId)
+  const setPropField = useBuilderStore((s) => s.setPropField)
+
+  // Q/E (or ←/→) rotate the selected prop from ANY zoom.
+  useRotateKeys(!!sel && rot.rotId == null, (d) => setPropField(sel.id, 'rotation', (sel.rotation ?? 0) + d))
 
   return (
     <group>
       {items.map((item) => (
-        <Prop key={item.id} item={item} selected={selectedId === item.id} onSelect={selectProp} onDragStart={onDragStart} />
+        <Prop key={item.id} item={item} y={heightAt(item.x, item.z)} selected={selectedId === item.id} onSelect={selectProp} onDragStart={onDragStart} />
       ))}
 
       {/* Live preview of the run being drawn */}
@@ -228,13 +243,34 @@ export default function Landscaping() {
         </mesh>
       )}
 
-      {/* Floating Delete button above the selected prop */}
-      {sel && dragId == null && (
-        <Html position={[sel.x, (propMeta(sel.type).labelH ?? 14) * (sel.scale ?? 1), sel.z]} center occlude={false} zIndexRange={[120, 0]}>
-          <button
-            onClick={() => removeProp(sel.id)}
-            style={{ background: 'rgba(15,23,42,0.95)', color: '#fca5a5', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 4, fontSize: 10, padding: '2px 8px', cursor: 'pointer', whiteSpace: 'nowrap' }}
-          >Delete</button>
+      {/* Free-rotate mode: prop follows the mouse; ✓ / ground click / Enter places it */}
+      {rotItem && (
+        <>
+          <RotatePlane
+            onMove={(px, pz) => setPropField(rotItem.id, 'rotation', rot.track(rotItem.x, rotItem.z, rotItem.rotation ?? 0, px, pz))}
+            onDone={rot.done}
+          />
+          <RotateDonePill
+            position={[rotItem.x, heightAt(rotItem.x, rotItem.z) + (propMeta(rotItem.type).labelH ?? 14) * (rotItem.scale ?? 1) + 3, rotItem.z]}
+            onDone={rot.done}
+          />
+        </>
+      )}
+
+      {/* Floating controls above the selected prop: free rotate + delete */}
+      {sel && dragId == null && rot.rotId == null && (
+        <Html position={[sel.x, heightAt(sel.x, sel.z) + (propMeta(sel.type).labelH ?? 14) * (sel.scale ?? 1), sel.z]} center occlude={false} zIndexRange={[120, 0]}>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button
+              title="Free rotate — the prop follows your mouse; click ✓ or the ground to place. (Q/E nudge 15°)"
+              onClick={() => rot.begin(sel.id)}
+              style={{ background: 'rgba(15,23,42,0.95)', color: '#bae6fd', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 4, fontSize: 10, padding: '2px 8px', cursor: 'pointer', whiteSpace: 'nowrap' }}
+            >Rotate</button>
+            <button
+              onClick={() => removeProp(sel.id)}
+              style={{ background: 'rgba(15,23,42,0.95)', color: '#fca5a5', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 4, fontSize: 10, padding: '2px 8px', cursor: 'pointer', whiteSpace: 'nowrap' }}
+            >Delete</button>
+          </div>
         </Html>
       )}
     </group>

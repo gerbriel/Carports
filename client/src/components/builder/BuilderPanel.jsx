@@ -1,17 +1,22 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   ChevronDown, Car, Warehouse, Tractor, Truck,
   Ruler, Square, DoorOpen, Palette, Settings, Plus, X, LayoutTemplate, Globe,
-  Layers, Eye, EyeOff, Sun, Trees, Anchor, RotateCw,
+  Layers, Eye, EyeOff, Sun, Trees, Anchor, RotateCw, ShieldCheck,
 } from 'lucide-react'
 import { useBuilderStore } from '../../store/builderStore'
 import {
   BUILDING_TYPES, ROOF_STYLES, COLORS, WALL_STYLES, DOOR_TYPES,
 } from '../../data/builderData'
 import { deriveStructure, LEG_LABELS, WIDESPAN_TRUSS_STYLES, installRequirements, SURFACE_ANCHORS, ANCHOR_LABELS, isFullyClosed } from '../../data/structural'
+import { getComponents, CATEGORY_ORDER } from '../../data/components'
+import PartInstanceRows from './PartInstanceRows'
+import RawMaterialsSection from './RawMaterialsSection'
+import { getFastenerSchedule } from '../../data/fastenerSchedule'
+import { packagingForItem } from './fastenerPackaging'
 import { frameSpan, girtCourseHeights, purlinRowCount, wallGirtCount } from './scene/BuildingTrusses'
 import { MapPin, ExternalLink, Wind, Snowflake } from 'lucide-react'
-import { geocodeAddress, fetchSiteFeatures, fetchOvertureBuildings, esriSatUrl, fetchElevationGrid, detectPools } from './scene/siteMap'
+import { geocodeAddress, suggestAddresses, fetchSiteFeatures, fetchOvertureBuildings, esriSatUrl, fetchElevationGrid, detectPools } from './scene/siteMap'
 import { getCityBySlug } from '../../data/cities'
 import { citySlug } from '../../data/caGeo'
 import { suggestSnowFromElevation } from '../../data/caPermits'
@@ -986,9 +991,18 @@ const ANCHOR_OPTIONS_BY_SURFACE = {
 const ALL_ANCHOR_KEYS = ['pinAnchor', 'rockAnchor', 'mobileHomeAnchor', 'asphaltAnchor', 'titenHDScrew', 'concreteAnchor', 'weldedOnBrackets']
 // Non-anchor add-ons (always shown). PBR 26ga lives up in the panel section now.
 const GENERAL_EXTRA_OPTIONS = [
-  ['extraTrusses',        'Extra Trusses'      ],
+  ['extraPurlins',        'Extra Purlins'      ],
   ['gauge26PanelUpgrade', '26 GA Panel Upgrade'],
   ['coloredScrews',       'Colored Screws'     ],
+]
+
+// Column-style options for the manual Leg Style picker (Auto = derived logic).
+const LEG_STYLE_OPTIONS = [
+  ['auto',   'Auto (recommended)'],
+  ['single', 'Single Post'],
+  ['double', 'Double'],
+  ['ladder', 'Ladder (built-up)'],
+  ['zigzag', 'ZigZag (built-up)'],
 ]
 const SURFACE_LABEL = { ground: 'Ground / Gravel', gravel: 'Ground / Gravel', asphalt: 'Asphalt', concrete: 'Cement' }
 
@@ -1016,9 +1030,11 @@ function QtyStepper({ label, hint, value, suggested, overridden, onChange, onAut
   )
 }
 
-function OptionsSection({ store }) {
+// ─── Engineering Section ───────────────────────────────────────────────────────
+// Certification, bracing, design loads, extra trusses and the auto-derived
+// engineering-package readout — pulled out of Options into their own section.
+function EngineeringSection({ store }) {
   const structure = deriveStructure(store)
-  const req = installRequirements(store)
   const trussLabel = store.roofStyle === 'regular' ? 'Rounded bow'
                    : store.width > 30 ? 'Webbed A-frame' : 'Peak-brace A-frame'
   const ENG_ROWS = [
@@ -1033,6 +1049,41 @@ function OptionsSection({ store }) {
 
   return (
     <div className="space-y-5">
+
+      {/* Certification */}
+      <div>
+        <p className="text-xs text-slate-400 mb-1.5">Certification</p>
+        <Segmented
+          value={store.certification}
+          options={[{ id: 'uncertified', label: 'Uncertified' }, { id: 'local_code', label: 'Built To Local Code' }]}
+          onChange={(v) => store.setField('certification', v)}
+        />
+      </div>
+
+      {/* Side Bracing — diagonal braces are MANDATORY while the build is CERTIFIED
+          (Built To Local Code). The ONLY way to turn them off is to mark the build
+          Uncertified, so the toggle locks ON whenever certified. */}
+      {(() => {
+        const certified   = store.certification === 'local_code'
+        const recommended = store.width > 30 || store.height >= 11
+        const on = structure.bracing === 'diagonal'
+        return (
+          <div>
+            <p className="text-xs text-slate-400 mb-1.5">Side Bracing</p>
+            <Segmented
+              value={on ? 'diagonal' : 'none'}
+              options={[{ id: 'none', label: 'None' }, { id: 'diagonal', label: 'Diagonal Braces' }]}
+              onChange={(v) => store.setField('bracingType', v)}
+              disabled={certified}
+            />
+            <p className="text-[10px] text-slate-500 mt-1">
+              {certified
+                ? 'Required while certified — mark Uncertified above to remove braces'
+                : (recommended ? 'Recommended for this size' : 'Optional')}
+            </p>
+          </div>
+        )
+      })()}
 
       {/* Design loads — drive the engineering schedules below */}
       <div>
@@ -1050,6 +1101,25 @@ function OptionsSection({ store }) {
               {WIND_OPTIONS.map((w) => <option key={w} value={w}>{w} mph</option>)}
             </select>
           </div>
+        </div>
+      </div>
+
+      {/* Extra trusses — manual frames ADDED beyond the load-driven spacing */}
+      <div>
+        <p className="text-xs text-slate-400 mb-1.5">Extra Trusses <span className="text-slate-600">· added beyond load spacing</span></p>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => store.setField('extraTrussCount', Math.max(0, (store.extraTrussCount ?? 0) - 1))}
+            className="h-7 w-7 rounded border border-white/15 text-slate-200 hover:border-white/40 hover:text-white text-base leading-none"
+          >−</button>
+          <span className="min-w-[2ch] text-center text-sm font-semibold text-white">{store.extraTrussCount ?? 0}</span>
+          <button
+            onClick={() => store.setField('extraTrussCount', (store.extraTrussCount ?? 0) + 1)}
+            className="h-7 w-7 rounded border border-white/15 text-slate-200 hover:border-white/40 hover:text-white text-base leading-none"
+          >+</button>
+          {(store.extraTrussCount ?? 0) > 0 && (
+            <button onClick={() => store.setField('extraTrussCount', 0)} className="text-[10px] text-slate-500 hover:text-slate-300 ml-1">reset</button>
+          )}
         </div>
       </div>
 
@@ -1095,40 +1165,34 @@ function OptionsSection({ store }) {
           </p>
         )}
       </div>
+    </div>
+  )
+}
 
-      {/* Side Bracing — diagonal braces are MANDATORY while the build is CERTIFIED
-          (Built To Local Code). The ONLY way to turn them off is to mark the build
-          Uncertified, so the toggle locks ON whenever certified. */}
-      {(() => {
-        const certified   = store.certification === 'local_code'
-        const recommended = store.width > 30 || store.height >= 11
-        const on = structure.bracing === 'diagonal'
-        return (
-          <div>
-            <p className="text-xs text-slate-400 mb-1.5">Side Bracing</p>
-            <Segmented
-              value={on ? 'diagonal' : 'none'}
-              options={[{ id: 'none', label: 'None' }, { id: 'diagonal', label: 'Diagonal Braces' }]}
-              onChange={(v) => store.setField('bracingType', v)}
-              disabled={certified}
-            />
-            <p className="text-[10px] text-slate-500 mt-1">
-              {certified
-                ? 'Required while certified — mark Uncertified below to remove braces'
-                : (recommended ? 'Recommended for this size' : 'Optional')}
-            </p>
-          </div>
-        )
-      })()}
+function OptionsSection({ store }) {
+  const req = installRequirements(store)
 
-      {/* Certification */}
+  return (
+    <div className="space-y-5">
+
+      {/* Leg (column) style — Auto keeps the derived logic; override to force a type */}
       <div>
-        <p className="text-xs text-slate-400 mb-1.5">Certification</p>
-        <Segmented
-          value={store.certification}
-          options={[{ id: 'uncertified', label: 'Uncertified' }, { id: 'local_code', label: 'Built To Local Code' }]}
-          onChange={(v) => store.setField('certification', v)}
-        />
+        <p className="text-xs text-slate-400 mb-1.5">Leg Style</p>
+        <div className="grid grid-cols-2 gap-1.5">
+          {LEG_STYLE_OPTIONS.map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => store.setField('legStyle', id)}
+              className={`rounded border px-2.5 py-1.5 text-left text-[11px] font-medium transition-all ${
+                (store.legStyle ?? 'auto') === id
+                  ? 'border-brand bg-brand/15 text-white'
+                  : 'border-white/10 text-slate-400 hover:border-white/25'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Installation Surface — ground & gravel combined; Cement = concrete */}
@@ -1206,8 +1270,9 @@ function OptionsSection({ store }) {
       </div>
 
       {/* Install equipment the customer provides — defaults to the size-based
-          suggestion; adjust to signify how many they'll supply (also sets how many
-          are staged in the 3-D scene). */}
+          suggestion; adjust to signify how many they'll supply. Quote info ONLY:
+          the rigs staged in the 3-D scene are strictly size-driven and can't be
+          added or removed here. */}
       <div>
         <p className="text-xs text-slate-400 mb-2">Install Equipment to Provide</p>
         <div className="space-y-2.5 rounded-lg border border-white/8 bg-white/3 p-3">
@@ -1348,47 +1413,8 @@ function OptionsSection({ store }) {
         <p className="text-right text-[10px] text-slate-500 mt-0.5">{store.notes.length}/1000</p>
       </div>
 
-      {/* Custom Components */}
-      <div>
-        <p className="text-xs text-slate-400 mb-2">Other Components</p>
-        {store.customComponents.map((comp, i) => (
-          <div key={i} className="flex gap-1.5 mb-1.5">
-            <input
-              value={comp.name}
-              onChange={(e) => {
-                const c = [...store.customComponents]
-                c[i] = { ...c[i], name: e.target.value }
-                store.setField('customComponents', c)
-              }}
-              placeholder="Component name"
-              className="flex-1 rounded border border-white/10 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-brand focus:outline-none"
-            />
-            <input
-              type="number"
-              value={comp.qty}
-              min={1}
-              onChange={(e) => {
-                const c = [...store.customComponents]
-                c[i] = { ...c[i], qty: Number(e.target.value) }
-                store.setField('customComponents', c)
-              }}
-              className="w-12 rounded border border-white/10 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-brand focus:outline-none"
-            />
-            <button
-              onClick={() => store.setField('customComponents', store.customComponents.filter((_, j) => j !== i))}
-              className="text-slate-500 hover:text-red-400 px-1 text-xs"
-            >
-              <X size={13} />
-            </button>
-          </div>
-        ))}
-        <button
-          onClick={() => store.setField('customComponents', [...store.customComponents, { name: '', qty: 1 }])}
-          className="mt-1 w-full rounded border border-dashed border-white/15 py-1.5 text-xs text-slate-500 hover:border-white/30 hover:text-slate-400 transition-colors"
-        >
-          + Add Component
-        </button>
-      </div>
+      {/* "Other Components" custom line items moved to the Parts view (Parts
+          toolbar toggle) so they sit alongside the detailed bill of materials. */}
 
     </div>
   )
@@ -1473,7 +1499,7 @@ function LandscapingSection({ store }) {
             </div>
           </div>
         ))}
-        <p className="text-[10px] text-slate-500">Pick a type, then click the ground to drop it. Drag to move; select to rotate, resize or delete.</p>
+        <p className="text-[10px] text-slate-500">Pick a type, then click the ground to drop it. Drag to move; select to rotate, resize or delete. Tip: with one selected, Q / E (or ←/→) rotates it from any zoom — hold Shift for 45°.</p>
       </div>
     </div>
   )
@@ -1609,16 +1635,70 @@ function SiteMapControls({ store }) {
   const loading = site.status === 'loading'
   const ready   = site.status === 'ready'
 
-  const load = async () => {
-    const parts = [street.trim(), city.trim(), [state.trim(), zip.trim()].filter(Boolean).join(' ').trim()]
-    const q = parts.filter(Boolean).join(', ')
+  // Address autocomplete (key-free). Debounced suggestions carry lat/lng, so
+  // picking one places the site directly — no re-geocode, no "not found" miss.
+  const [suggestions, setSuggestions] = useState([])
+  const [showSug, setShowSug]         = useState(false)
+  const [activeIdx, setActiveIdx]     = useState(-1)
+  const justSelectedRef = useRef(false)   // suppress the fetch that field-fill would trigger
+
+  useEffect(() => {
+    // Skip the re-run caused by selecting a suggestion (it fills the fields).
+    if (justSelectedRef.current) { justSelectedRef.current = false; return }
+    if (street.trim().length < 4) { setSuggestions([]); setShowSug(false); return }
+    const q = [street, city, state].map((v) => v.trim()).filter(Boolean).join(', ')
+    const ctrl = new AbortController()
+    const t = setTimeout(async () => {
+      try {
+        const list = await suggestAddresses(q, { signal: ctrl.signal })
+        setSuggestions(list)
+        setShowSug(list.length > 0)
+        setActiveIdx(-1)
+      } catch { /* aborted or failed — leave the last list in place */ }
+    }, 450)   // generous debounce (OSM policy discourages per-keystroke calls)
+    return () => { clearTimeout(t); ctrl.abort() }
+  }, [street, city, state])
+
+  const selectSuggestion = (sug) => {
+    justSelectedRef.current = true
+    setStreet(sug.street || street)
+    setCity(sug.city || '')
+    setState(sug.state || '')
+    setZip(sug.zip || '')
+    setSuggestions([])
+    setShowSug(false)
+    setActiveIdx(-1)
+    load({ ...sug, street: sug.street || street })   // pass values explicitly (setState is async)
+  }
+
+  const onStreetKeyDown = (e) => {
+    if (showSug && suggestions.length) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1)); return }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); setActiveIdx((i) => Math.max(i - 1, 0)); return }
+      if (e.key === 'Escape')    { setShowSug(false); return }
+      if (e.key === 'Enter' && activeIdx >= 0) { e.preventDefault(); selectSuggestion(suggestions[activeIdx]); return }
+    }
+    if (e.key === 'Enter') load()
+  }
+
+  const load = async (preset) => {
+    const s  = (preset?.street ?? street).trim()
+    const c  = (preset?.city   ?? city).trim()
+    const st = (preset?.state  ?? state).trim()
+    const z  = (preset?.zip    ?? zip).trim()
+    const parts = [s, c, [st, z].filter(Boolean).join(' ').trim()]
+    const q = preset?.label || parts.filter(Boolean).join(', ')
     if (!q || loading) return
+    setShowSug(false)
     store.setSiteMap({
       status: 'loading', error: null, address: q,
-      street: street.trim(), city: city.trim(), state: state.trim(), zip: zip.trim(),
+      street: s, city: c, state: st, zip: z,
     })
     try {
-      const { lat, lng, label } = await geocodeAddress(q)
+      // A picked suggestion already carries coordinates — use them and skip geocoding.
+      const { lat, lng, label } = (preset?.lat != null && preset?.lng != null)
+        ? { lat: preset.lat, lng: preset.lng, label: preset.label || q }
+        : await geocodeAddress(q)
       const radiusM = site.radiusM ?? 250
       const features = await fetchSiteFeatures(lat, lng, radiusM)
       // Buildings: prefer Overture (OSM+Microsoft+Google, with heights) when the
@@ -1651,13 +1731,35 @@ function SiteMapControls({ store }) {
         <p className="text-xs font-semibold text-slate-200">Place on a real address</p>
       </div>
       <div className="space-y-1.5">
-        <input
-          value={street}
-          onChange={(e) => setStreet(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && load()}
-          placeholder="Street address"
-          className="w-full min-w-0 rounded border border-white/15 bg-black/30 px-2 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-brand focus:outline-none"
-        />
+        <div className="relative">
+          <input
+            value={street}
+            onChange={(e) => setStreet(e.target.value)}
+            onKeyDown={onStreetKeyDown}
+            onFocus={() => suggestions.length && setShowSug(true)}
+            onBlur={() => setTimeout(() => setShowSug(false), 120)}
+            placeholder="Start typing an address…"
+            autoComplete="off"
+            className="w-full min-w-0 rounded border border-white/15 bg-black/30 px-2 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-brand focus:outline-none"
+          />
+          {showSug && suggestions.length > 0 && (
+            <ul className="absolute z-30 mt-1 max-h-60 w-full overflow-auto rounded-md border border-white/15 bg-slate-900/95 shadow-xl backdrop-blur">
+              {suggestions.map((sug, i) => (
+                <li key={`${sug.lat},${sug.lng},${i}`}>
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}   // keep input focus so onClick fires
+                    onClick={() => selectSuggestion(sug)}
+                    className={`flex w-full items-start gap-1.5 px-2 py-1.5 text-left text-[11px] leading-snug text-slate-200 hover:bg-white/10 ${i === activeIdx ? 'bg-white/10' : ''}`}
+                  >
+                    <MapPin size={11} className="mt-0.5 shrink-0 text-brand" />
+                    <span className="min-w-0 truncate" title={sug.label}>{sug.label}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
         <input
           value={city}
           onChange={(e) => setCity(e.target.value)}
@@ -1682,7 +1784,7 @@ function SiteMapControls({ store }) {
             className="w-20 min-w-0 rounded border border-white/15 bg-black/30 px-2 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-brand focus:outline-none"
           />
           <button
-            onClick={load}
+            onClick={() => load()}
             disabled={loading}
             className="flex-1 rounded border border-brand bg-brand/15 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand/25 disabled:opacity-50"
           >
@@ -1746,23 +1848,26 @@ function SiteMapControls({ store }) {
           <Slider label="Rotate building" value={rotDeg} min={0} max={359} step={1} unit="°"
             onChange={(v) => store.setBuildingPlacement({ rotation: (v * Math.PI) / 180 })} />
           <button
+            onClick={() => store.setField('rotatingBuilding', !store.rotatingBuilding)}
+            className={`w-full rounded border py-1.5 text-[11px] font-semibold transition-colors ${
+              store.rotatingBuilding
+                ? 'border-emerald-500 bg-emerald-500/15 text-emerald-300'
+                : 'border-white/10 text-slate-300 hover:border-white/25'
+            }`}
+          >
+            {store.rotatingBuilding ? '✓ Place rotation' : 'Rotate freely (follows mouse)'}
+          </button>
+          <button
             onClick={() => store.setBuildingPlacement({ x: 0, z: 0, rotation: 0 })}
             className="w-full rounded border border-white/10 py-1.5 text-[11px] font-semibold text-slate-300 hover:border-white/25"
           >
             Recenter building
           </button>
-          <p className="text-[10px] text-slate-500">Drag the building in the 3D view to position it on the lot.</p>
+          <p className="text-[10px] text-slate-500">Drag the building in the 3D view to position it on the lot. "Rotate freely" makes it follow your mouse — click ✓ to place. Q / E (or ←/→) nudge 15° when nothing else is selected.</p>
         </>
       )}
 
-      <div>
-        <p className="text-[10px] text-slate-400 mb-1">Search radius</p>
-        <Segmented
-          value={site.radiusM ?? 250}
-          options={[{ id: 150, label: '150 m' }, { id: 250, label: '250 m' }, { id: 400, label: '400 m' }]}
-          onChange={(v) => store.setSiteMap({ radiusM: v })}
-        />
-      </div>
+      {/* Search radius is fixed at the store default (250 m) — no visible control. */}
       <p className="text-[10px] text-slate-500">Free OpenStreetMap data — no API key. Heights are estimated where unmapped.</p>
     </div>
   )
@@ -1788,14 +1893,6 @@ function SceneSection({ store }) {
             ? ` (currently ${SURFACE_LABEL[store.installationSurface] ?? store.installationSurface}) — the prepared pad shows under the build.`
             : ' (set under Options) — mix & match, e.g. a cement pad on a lawn.'}
         </p>
-      </div>
-
-      {/* Landscaping — shade trees, pines & shrubs placed around the building */}
-      <div className="border-t border-white/8 pt-3">
-        <p className="text-xs font-semibold text-slate-200 mb-2 flex items-center gap-1.5">
-          <Trees size={13} className="text-brand" /> Landscaping
-        </p>
-        <LandscapingSection store={store} />
       </div>
     </div>
   )
@@ -1890,15 +1987,122 @@ function partCounts(store) {
   }
 }
 
+// ── Detailed bill of materials ────────────────────────────────────────────────
+// The SAME catalog the Diagnostic panel reads — getComponents(config) grouped by
+// CATEGORY_ORDER (Foundation / Frame / Secondary steel / Skin / Trim / Fasteners /
+// Openings). So Parts, Diagnostic and the calculator all stay in sync off one
+// source. Each row: bubble no · name · qty+unit, with the member spec + spacing/
+// length note beneath.
+function BillOfMaterials({ store }) {
+  const items = getComponents(store)
+  const fastenerSched = getFastenerSchedule(store)   // packaging per fastener/anchor line
+  const byCat = CATEGORY_ORDER
+    .map((cat) => ({ cat, rows: items.filter((it) => it.category === cat) }))
+    .filter((g) => g.rows.length > 0)
+  return (
+    <div className="space-y-2">
+      <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 pt-1">Bill of Materials</p>
+      {byCat.map(({ cat, rows }) => (
+        <div key={cat} className="space-y-1">
+          <p className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">{cat}</p>
+          {rows.map((it) => {
+            const pkg = packagingForItem(it.id, store, fastenerSched)
+            return (
+              <div key={it.id} className="rounded border border-white/8 bg-white/3 px-2 py-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded bg-white/12 text-[9px] font-bold text-slate-300">{it.no}</span>
+                  <span className="flex-1 text-[11px] font-medium text-slate-200 leading-tight">{it.name}</span>
+                  {it.qty != null && (
+                    <span className="text-[10px] font-bold text-slate-400 whitespace-nowrap">{it.qty} {it.unit}</span>
+                  )}
+                </div>
+                <div className="pl-[24px] text-[9.5px] text-slate-500 leading-snug">
+                  {it.material}{it.detail ? ` · ${it.detail}` : ''}
+                </div>
+                {/* Fastener/anchor packaging — ≈N · M/box · K boxes per line */}
+                {pkg.map((p) => (
+                  <div key={p.name} className="pl-[24px] text-[9.5px] text-slate-400 leading-snug">
+                    <span className="text-slate-500">{p.name}: </span>
+                    <span className="font-semibold text-brand/90">{p.text}</span>
+                  </div>
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      ))}
+
+      {/* Raw material takeoff — sticks / cuts / welds + panel cut list (collapsible) */}
+      <RawMaterialsSection config={store} variant="parts" />
+    </div>
+  )
+}
+
+// ── Custom line items ("Other") ───────────────────────────────────────────────
+// Free-text add-ons appended to the parts list (name + qty). Same UX as before,
+// now living in the Parts view alongside the BOM.
+function CustomComponents({ store }) {
+  return (
+    <div>
+      <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 pt-1 mb-2">Other Components</p>
+      {store.customComponents.map((comp, i) => (
+        <div key={i} className="flex gap-1.5 mb-1.5">
+          <input
+            value={comp.name}
+            onChange={(e) => {
+              const c = [...store.customComponents]
+              c[i] = { ...c[i], name: e.target.value }
+              store.setField('customComponents', c)
+            }}
+            placeholder="Component name"
+            className="flex-1 rounded border border-white/10 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-brand focus:outline-none"
+          />
+          <input
+            type="number"
+            value={comp.qty}
+            min={1}
+            onChange={(e) => {
+              const c = [...store.customComponents]
+              c[i] = { ...c[i], qty: Number(e.target.value) }
+              store.setField('customComponents', c)
+            }}
+            className="w-12 rounded border border-white/10 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-brand focus:outline-none"
+          />
+          <button
+            onClick={() => store.setField('customComponents', store.customComponents.filter((_, j) => j !== i))}
+            className="text-slate-500 hover:text-red-400 px-1 text-xs"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      ))}
+      <button
+        onClick={() => store.setField('customComponents', [...store.customComponents, { name: '', qty: 1 }])}
+        className="mt-1 w-full rounded border border-dashed border-white/15 py-1.5 text-xs text-slate-500 hover:border-white/30 hover:text-slate-400 transition-colors"
+      >
+        + Add Component
+      </button>
+    </div>
+  )
+}
+
 function ComponentsSection({ store }) {
   const vis = store.componentVisibility ?? {}
   const allOn = COMPONENT_KEYS.every((k) => vis[k] !== false)
   const [expanded, setExpanded] = useState(null)
   const counts = partCounts(store)
+  // Catalog items (with per-instance `instances`) keyed by id — the single source
+  // for the granular tree so the Parts view and the Diagnostic legend match.
+  const catById = Object.fromEntries(getComponents(store).map((it) => [it.id, it]))
+  // Lean-tos keep the LEGACY per-instance scheme (hiddenParts) since they enumerate
+  // by enabled wing, not by the catalog.
   const hidden = store.hiddenParts ?? {}
-  const PER_INSTANCE = new Set(['purlins', 'girts', 'leanTos'])   // can toggle each one on/off
   return (
     <div className="space-y-3">
+      {/* Detailed BOM — same catalog the Diagnostic panel + calculator read */}
+      <BillOfMaterials store={store} />
+
+      <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 pt-2">Show / Hide Parts</p>
       <p className="text-[10px] text-slate-500">Toggle individual parts on or off to show or hide them on the building.</p>
       <div className="flex gap-1.5">
         <button
@@ -1933,7 +2137,12 @@ function ComponentsSection({ store }) {
           {group.items.map(([key, label]) => {
             const on = vis[key] !== false
             const n  = counts[key] ?? 0
-            const canList = n > 1
+            const item = catById[key]
+            // Granular tree: prefer the catalog's per-instance list; lean-tos fall
+            // back to the legacy enumerated list (by enabled wing).
+            const catInstances = item?.instances ?? []
+            const legacyList   = key === 'leanTos' ? partInstances(key, store, n) : []
+            const canList = catInstances.length > 1 || legacyList.length > 1
             const isOpen = expanded === key
             return (
               <div key={key}>
@@ -1953,12 +2162,12 @@ function ComponentsSection({ store }) {
                     </button>
                   )}
                 </div>
-                {isOpen && canList && (
-                  <div className="mt-1 ml-2 grid grid-cols-2 gap-x-3 gap-y-0.5 border-l border-white/10 pl-2">
-                    {partInstances(key, store, n).map(({ id, name }) => {
-                      if (!PER_INSTANCE.has(key)) {
-                        return <span key={id} className="text-[10px] text-slate-400">{name}</span>
-                      }
+                {isOpen && canList && catInstances.length > 1 && (
+                  <PartInstanceRows item={item} variant="parts" />
+                )}
+                {isOpen && canList && catInstances.length <= 1 && legacyList.length > 1 && (
+                  <div className="mt-1 ml-2 grid grid-cols-1 gap-y-0.5 border-l border-white/10 pl-2">
+                    {legacyList.map(({ id, name }) => {
                       const partOn = !hidden[id]
                       return (
                         <button
@@ -1981,14 +2190,24 @@ function ComponentsSection({ store }) {
       {!allOn && (
         <p className="text-[10px] text-amber-400/80">Some parts are hidden — they're still included in the build &amp; price.</p>
       )}
+
+      {/* Custom line items ("Other") — kept from the old parts list */}
+      <CustomComponents store={store} />
     </div>
   )
 }
 
 export default function BuilderPanel() {
   const store  = useBuilderStore()
-  const [active, setActive] = useState('size')
-  const toggle = (id) => setActive((a) => (a === id ? null : id))
+  // Sections open independently: clicking a header toggles ONLY that section, so
+  // you can expand several (or all) and scroll — nothing auto-collapses.
+  const [openSections, setOpenSections] = useState(() => new Set(['size']))
+  const toggle = (id) => setOpenSections((prev) => {
+    const next = new Set(prev)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+  const isOpen = (id) => openSections.has(id)
 
   return (
     <div className="flex flex-col h-full text-sm">
@@ -1997,10 +2216,10 @@ export default function BuilderPanel() {
       </div>
 
       <div className="overflow-y-auto flex-1">
-        <Section id="size"    active={active === 'size'}    onToggle={toggle} icon={<Ruler size={14} />}         title="Size & Structure">
+        <Section id="size"    active={isOpen('size')}    onToggle={toggle} icon={<Ruler size={14} />}         title="Size & Structure">
           <SizeSection store={store} />
         </Section>
-        <Section id="walls"   active={active === 'walls'}   onToggle={toggle} icon={<Square size={14} />}        title="Walls">
+        <Section id="walls"   active={isOpen('walls')}   onToggle={toggle} icon={<Square size={14} />}        title="Walls">
           <WallsSection store={store} />
           <div className="mt-5 border-t border-white/8 pt-4">
             <p className="mb-3 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-500">
@@ -2009,10 +2228,10 @@ export default function BuilderPanel() {
             <InteriorWallsSection store={store} />
           </div>
         </Section>
-        <Section id="colors"  active={active === 'colors'}  onToggle={toggle} icon={<Palette size={14} />}       title="Colors">
+        <Section id="colors"  active={isOpen('colors')}  onToggle={toggle} icon={<Palette size={14} />}       title="Colors">
           <ColorsSection store={store} />
         </Section>
-        <Section id="doors"   active={active === 'doors'}   onToggle={toggle} icon={<DoorOpen size={14} />}      title="Doors & Windows">
+        <Section id="doors"   active={isOpen('doors')}   onToggle={toggle} icon={<DoorOpen size={14} />}      title="Doors & Windows">
           <DoorsSection store={store} />
           <div className="mt-5 border-t border-white/8 pt-4">
             <p className="mb-3 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-slate-500">
@@ -2021,13 +2240,16 @@ export default function BuilderPanel() {
             <SkylightsSection store={store} />
           </div>
         </Section>
-        <Section id="leanto"  active={active === 'leanto'}  onToggle={toggle} icon={<LayoutTemplate size={14} />} title="Lean-To Wings">
+        <Section id="leanto"  active={isOpen('leanto')}  onToggle={toggle} icon={<LayoutTemplate size={14} />} title="Lean-To Wings">
           <LeanToSection store={store} />
         </Section>
-        <Section id="options" active={active === 'options'} onToggle={toggle} icon={<Settings size={14} />}      title="Options">
+        <Section id="engineering" active={isOpen('engineering')} onToggle={toggle} icon={<ShieldCheck size={14} />} title="Engineering">
+          <EngineeringSection store={store} />
+        </Section>
+        <Section id="options" active={isOpen('options')} onToggle={toggle} icon={<Settings size={14} />}      title="Options">
           <OptionsSection store={store} />
         </Section>
-        <Section id="scene"   active={active === 'scene'}   onToggle={toggle} icon={<Globe size={14} />}          title="Scene / Background">
+        <Section id="scene"   active={isOpen('scene')}   onToggle={toggle} icon={<Globe size={14} />}          title="Scene / Background">
           <SceneSection store={store} />
         </Section>
       </div>
@@ -2153,15 +2375,16 @@ function VehiclesSection({ store }) {
             )
           })}
         </div>
-        <p className="text-[10px] text-slate-500">Pick a vehicle, then click the ground to drop it. Drag to move; select to recolor, rotate or delete.</p>
+        <p className="text-[10px] text-slate-500">Pick a vehicle, then click the ground to drop it. Drag to move; select to recolor, rotate or delete. Tip: with one selected, Q / E (or ←/→) rotates it from any zoom — hold Shift for 45°.</p>
       </div>
     </div>
   )
 }
 
-// Dedicated sidebar for the Vehicles tool — opened by the "Vehicles" toolbar
-// toggle (store.showVehicles). Lets you place scale-reference vehicles, recolor
-// them and drag them around the build to gauge clearance; hidden otherwise.
+// Dedicated sidebar for the Vehicles & Landscaping tool — opened by the toolbar
+// toggle (store.showVehicles). Lets you place scale-reference vehicles plus
+// landscaping props (trees, shrubs, fences, driveways), recolor/resize them and
+// drag them around the build to gauge clearance; hidden otherwise.
 export function VehiclesSidebar() {
   const store = useBuilderStore()
   if (!store.showVehicles) return null
@@ -2169,14 +2392,22 @@ export function VehiclesSidebar() {
     <div className="absolute lg:relative inset-y-0 left-0 z-40 w-[86%] max-w-xs lg:w-72 lg:max-w-none shrink-0 border-r border-white/8 bg-slate-950 overflow-hidden flex flex-col">
       <div className="px-4 py-3 border-b border-white/8 flex items-center justify-between">
         <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 flex items-center gap-1.5">
-          <Car size={13} /> Vehicles
+          <Car size={13} /> Vehicles & Landscaping
         </p>
-        <button onClick={() => { store.cancelPlacing(); store.setField('showVehicles', false) }} className="text-slate-500 hover:text-white" title="Close vehicles">
+        <button onClick={() => { store.cancelPlacing(); store.setField('showVehicles', false) }} className="text-slate-500 hover:text-white" title="Close vehicles & landscaping">
           <X size={14} />
         </button>
       </div>
-      <div className="overflow-y-auto flex-1 px-4 py-3">
+      <div className="overflow-y-auto flex-1 px-4 py-3 space-y-5">
         <VehiclesSection store={store} />
+        {/* Landscaping — shade trees, pines, shrubs, fences & driveways.
+            Moved here from the left Scene panel so all scene props share one tool. */}
+        <div className="border-t border-white/8 pt-4">
+          <p className="text-xs font-semibold text-slate-200 mb-2 flex items-center gap-1.5">
+            <Trees size={13} className="text-brand" /> Landscaping
+          </p>
+          <LandscapingSection store={store} />
+        </div>
       </div>
     </div>
   )

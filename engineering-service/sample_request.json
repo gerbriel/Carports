@@ -1,0 +1,18 @@
+{
+  "width_ft": 20,
+  "length_ft": 30,
+  "eave_ft": 10,
+  "pitch": 3,
+  "roof_style": "a_frame_vertical",
+  "enclosure": "enclosed",
+  "ground_snow_psf": 30,
+  "roof_live_psf": 20,
+  "wind_speed_mph": 115,
+  "exposure": "C",
+  "sds": 1.0,
+  "tube_outer_in": 2.5,
+  "tube_gauge": 14,
+  "purlin_spacing_ft": 2.5,
+  "girt_spacing_ft": 3.5,
+  "openings": [{ "kind": "rollup", "width_ft": 10, "height_ft": 8 }]
+}

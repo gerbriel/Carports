@@ -1,11 +1,22 @@
 import { useMemo } from 'react'
 import * as THREE from 'three'
 import { cloneForWall, getHorizTex } from './corrugatedTexture'
-import { frameSpan, girtCourseHeights, EAVE_DROP, TRUSS_OH, GABLE_OH, TubeBox, M } from './BuildingTrusses'
+import { frameSpan, girtCourseHeights, EAVE_DROP, TRUSS_OH, GABLE_OH, TubeBox, M, roofLift } from './BuildingTrusses'
 import { CornerTrim, LTrim, BoxedEaveRun, LTrimRun, cornerRy } from './TrimMesh'
 import SkylightSurface, { flatBasis } from './Skylight'
 import { isFullyClosed } from '../../../data/structural'
 import { panelFinish } from '../../../data/builderData'
+import { useExplode } from './useExplode'
+import { pieceExplode } from '../../../data/explode'
+
+// Per-piece explode helper for the lean-to pieces: an <Ex> group wraps each mesh
+// and offsets it by pieceExplode(anchor, layer, …). amount 0 → [0,0,0] (assembled
+// unchanged). Callers pass the piece's assembled world anchor + its install layer.
+function Ex({ at, layer, amount, maxDim, children }) {
+  const o = amount > 0 ? pieceExplode(at, layer, amount, maxDim) : ZERO3
+  return <group position={o}>{children}</group>
+}
+const ZERO3 = [0, 0, 0]
 
 const WAINSCOT_H = 3   // 3′ base band, matches the center building
 
@@ -48,6 +59,9 @@ export const GHF = 0.33  // face height
 // on the column's OUTBOARD face and still tucks fully behind the panel skin —
 // mirrors how the center build sets its posts back from the cladding.
 const GCLR = GHD + 0.02
+// Outer-eave post CENTER inset from the outer wall line — shared with
+// BuildingHardware so base sleeves/screw rings land exactly on the posts.
+export const LEAN_POST_INSET = M / 2 + GCLR
 // End-panel stand-off from the building line: must clear the CORNER eave column
 // (half its tube) PLUS the girt depth so end-wall girts seat on the OUTSIDE of the
 // post and still tuck behind the end panel (was a flat 0.07 — less than the column
@@ -159,11 +173,15 @@ export function leanPurlinTs(slopeLen, span) {
 }
 // The rafter is dropped this far below the roof skin (in Y) — enough room for the
 // purlin to sit on the rafter TOP and still tuck under the skin: half the rafter
-// tube + the purlin depth + clearance. (Center build does the same with roof LIFT.)
-const RDROP = M / 2 + GHD + 0.045
-// Purlin center stand-off below the skin so the crown sits just under it; with the
-// rafter dropped RDROP, the brim then lands on the rafter top.
-const PUR = GHD / 2 + 0.03
+// tube + the purlin section depth + clearance. A SQUARE-tube secondary (>30′) is
+// M deep instead of GHD, so the skin must ride higher (mirrors the center build's
+// width-aware roofLift 0.28 → 0.40). Section-aware so nothing pokes through.
+const rDrop = (square) => M / 2 + (square ? M : GHD) + 0.045
+// Purlin center stand-off BELOW the skin (perpendicular) so the section's OUTER
+// face sits just under the skin — half the section depth + a hair of clearance.
+// Section-aware: a hat is GHD deep, a square-tube purlin is M deep, so the deeper
+// square tube is set back further and no longer pokes through the panel.
+const purStandoff = (square) => (square ? M / 2 : GHD / 2) + 0.02
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -213,24 +231,27 @@ function slopedPanelGeo(x0, y0, z0,  x1, y1, z1,  x2, y2, z2,  x3, y3, z3, cuv) 
   return g
 }
 
-// Column array along Z axis (spans building length, posts at every frame)
-function ColsZ({ x, y, leanH, length }) {
-  const pts = useMemo(() => frameSpan(length), [length])
+// Column array along Z axis (spans building length, posts at every frame).
+// `hidden(i)` suppresses the i-th column (granular leanCol:<side>:<i>).
+function ColsZ({ x, y, leanH, length, spacing = 5, hidden }) {
+  const pts = useMemo(() => frameSpan(length, spacing), [length, spacing])
   return (
     <group>
       {pts.map((z, i) => (
+        hidden?.(i) ? null :
         <TubeBox key={i} size={[M, leanH, M]} position={[x, y, z]} material={steelMat} />
       ))}
     </group>
   )
 }
 
-// Column array along X axis (spans building width, posts at every frame)
-function ColsX({ z, y, leanH, width }) {
-  const pts = useMemo(() => frameSpan(width), [width])
+// Column array along X axis (spans building width, posts at every frame).
+function ColsX({ z, y, leanH, width, spacing = 5, hidden }) {
+  const pts = useMemo(() => frameSpan(width, spacing), [width, spacing])
   return (
     <group>
       {pts.map((x, i) => (
+        hidden?.(i) ? null :
         <TubeBox key={i} size={[M, leanH, M]} position={[x, y, z]} material={steelMat} />
       ))}
     </group>
@@ -260,9 +281,16 @@ const GINSET = GCLR - GHD / 2
 function SideLeanTo({
   mainWidth, mainHeight, length, side,
   leanWidth, attachHeight, pitch, continuous = false, walls, roofColor, wallColor, trimColor, frameOnly, panelProfile,
-  isVertical = true, girtSpacing = 4, squareSecondary = false,
+  isVertical = true, girtSpacing = 4, frameSpacing = 5, squareSecondary = false,
   showSkylights = false, wainscotEnabled = false, wainscotColor, wainscotWalls,
+  trimVis = {},
+  hiddenInstances = {},
 }) {
+  // Granular per-instance hide: an id in hiddenInstances suppresses THAT mesh,
+  // on top of the wing-level hiddenParts['leanTos#<side>'] gate (Building.jsx).
+  const hidden = (id) => hiddenInstances?.[id] === true
+  // Per-piece explode state (each lean-to piece fans out via <Ex>).
+  const { amount: exAmt, maxDim: exDim } = useExplode()
   const hw  = mainWidth / 2
   const hl  = length / 2
   const lw  = leanWidth
@@ -330,11 +358,18 @@ function SideLeanTo({
   const rlen   = Math.hypot(rdx, rdy)
   const rAngle = Math.atan2(rdy, rdx)
   const rcx    = (xInner + xTail) / 2
-  // Continuous → drop the rafter the SAME amount as the main roof (LIFT) so the
-  // lean-to top chord is collinear with the main top chord (perfect line-up).
-  const drop   = continuous ? 0.28 : RDROP
+  // Continuous → drop the rafter the SAME amount as the main roof (LIFT, width-aware)
+  // so the lean-to top chord is collinear with the main top chord (perfect line-up).
+  // Step-down → section-aware drop so a deep square-tube purlin still tucks under.
+  const drop   = continuous ? roofLift(mainWidth) : rDrop(squareSecondary)
   const rcy    = (attachH + yTail) / 2 - drop // under the skin, with room for the purlin
-  const frames = useMemo(() => frameSpan(length), [length])
+  const frames = useMemo(() => frameSpan(length, frameSpacing), [length, frameSpacing])
+
+  // Trim visibility — synced to the main building's trim toggles (Diagnostic /
+  // Components panel): eave drip + attach flashing, raking caps, corner trim.
+  const tvEave   = trimVis.eave   !== false
+  const tvRake   = trimVis.rake   !== false
+  const tvCorner = trimVis.corner !== false
 
   // Roof interior (underside) normal: perpendicular to the slope, forced downward.
   const roofN = (() => { let x = -rdy, y = rdx; if (y > 0) { x = -x; y = -y } const l = Math.hypot(x, y) || 1; return [x / l, y / l, 0] })()
@@ -342,7 +377,7 @@ function SideLeanTo({
   // Knee braces at the OUTER eave columns (the wall furthest from the main
   // building): column → up the rafter, one per frame, tucked interior.
   const KB   = Math.min(2.25, lw * 0.4, leanH * 0.4)   // brace leg length (ft)
-  const kx0  = xOuter + inDir * (M / 2 + GCLR)         // column center (set back behind panel)
+  const kx0  = xOuter + inDir * LEAN_POST_INSET        // column center (set back behind panel)
   const ky0  = leanH - KB                              // down the column
   const kx1  = xOuter + inDir * KB                     // inboard along the slope
   const ky1  = leanH - drop + (attachH - leanH) * (KB / lw)  // up the rafter, under skin
@@ -356,53 +391,75 @@ function SideLeanTo({
   // RDROP; subtract M/2 for the tube underside.
   const colTopY = attachH + slopeM * (kx0 - xInner) - drop - M / 2
 
+  // Girt runs are enumerated in a stable global order so leanGirt:<side>:<gi>
+  // routes to the right run: outer-wall courses first, then per closed end its
+  // horizontal courses + 1 raking girt. Mirrors leanGirtCount in leanToTakeoff.
+  let girtIx = 0
+
   return (
     <group>
-      {!frameOnly && <mesh geometry={roofGeo} material={roofMat} castShadow receiveShadow />}
-      {!frameOnly && <InteriorSkin colorHex={roofColor} geometry={roofGeo} n={roofN} />}
+      {!frameOnly && !hidden(`leanRoof:${side}`) && (
+        <Ex at={[(xInner + xTail) / 2, (attachH + yTail) / 2, 0]} layer="skin" amount={exAmt} maxDim={exDim}>
+          <mesh geometry={roofGeo} material={roofMat} castShadow receiveShadow />
+          <InteriorSkin colorHex={roofColor} geometry={roofGeo} n={roofN} />
+        </Ex>
+      )}
 
       {/* Outer wall — only when closed */}
-      {!frameOnly && walls?.outer !== 'open' && (
-        <>
+      {!frameOnly && walls?.outer !== 'open' && !hidden(`leanWallOuter:${side}`) && (
+        <Ex at={[xOuter, leanH / 2, 0]} layer="skin" amount={exAmt} maxDim={exDim}>
           <mesh position={[xOuter, leanH / 2, 0]} rotation={[0, outerWallRotY, 0]} material={wallMat} castShadow receiveShadow>
             <planeGeometry args={[length, leanH]} />
           </mesh>
           <InteriorSkin colorHex={wallColor} planeArgs={[length, leanH]} position={[xOuter, leanH / 2, 0]} rotation={[0, outerWallRotY, 0]} n={[-outSign, 0, 0]} />
-        </>
+        </Ex>
       )}
 
       {/* End walls (front/back) — closed ends. No rake strip on the sloped top:
           it would sit on top of the roof panels at the gable (and breaks the clean
           line on a continuous roof). The roof simply overhangs the end. */}
       {!frameOnly && ends.map((e) => (
-        <group key={e.key}>
+        hidden(`leanWallSide:${side}:${e.key}`) ? null :
+        <Ex key={e.key} at={[(xInner + xOuter) / 2, leanH / 2, e.z]} layer="skin" amount={exAmt} maxDim={exDim}>
           <mesh geometry={endGeo(e.z)} material={endMat} castShadow receiveShadow />
           <InteriorSkin colorHex={wallColor} geometry={endGeo(e.z)} n={[0, 0, -Math.sign(e.z)]} />
-        </group>
+        </Ex>
       ))}
 
       {/* Outer eave columns — set back behind the panel; topped at the rafter
           underside so the rafter sits on top of the post. */}
-      <ColsZ x={kx0} y={colTopY / 2} leanH={colTopY} length={length} />
+      <Ex at={[kx0, colTopY / 2, 0]} layer="frame" amount={exAmt} maxDim={exDim}>
+        <ColsZ x={kx0} y={colTopY / 2} leanH={colTopY} length={length} spacing={frameSpacing} hidden={(i) => hidden(`leanCol:${side}:${i}`)} />
+      </Ex>
 
       {/* Base rails — under the outer columns (runs the length) + along each
           closed end wall (attach line → outer column). Same 2½″ tube as the
           center building's BaseRails so the lean-to seats on its own rail. */}
-      <TubeBox size={[M, M, length]} position={[kx0, M / 2, 0]} material={steelMat} />
+      <Ex at={[kx0, M / 2, 0]} layer="base" amount={exAmt} maxDim={exDim}>
+        <TubeBox size={[M, M, length]} position={[kx0, M / 2, 0]} material={steelMat} />
+      </Ex>
       {ends.map((e) => (
-        <TubeBox key={`br-${e.key}`} size={[lw, M, M]}
-          position={[(xInner + xOuter) / 2, M / 2, e.z - Math.sign(e.z) * ECLR]} material={steelMat} />
+        <Ex key={`br-${e.key}`} at={[(xInner + xOuter) / 2, M / 2, e.z]} layer="base" amount={exAmt} maxDim={exDim}>
+          <TubeBox size={[lw, M, M]}
+            position={[(xInner + xOuter) / 2, M / 2, e.z - Math.sign(e.z) * ECLR]} material={steelMat} />
+        </Ex>
       ))}
 
       {/* Knee braces — outer eave column → rafter, one per frame */}
       {frames.map((z, i) => (
-        <TubeBox key={`knee-${i}`} size={[klen, M, M]} position={[kcx, kcy, z]} rotation={[0, 0, kang]} material={steelMat} />
+        hidden(`leanKnee:${side}:${i}`) ? null :
+        <Ex key={`knee-${i}`} at={[kcx, kcy, z]} layer="frame" amount={exAmt} maxDim={exDim}>
+          <TubeBox size={[klen, M, M]} position={[kcx, kcy, z]} rotation={[0, 0, kang]} material={steelMat} />
+        </Ex>
       ))}
 
       {/* Rafters / top chords — slope from the outer eave up INTO the main
           building's legs at the attach line, one per frame */}
       {frames.map((z, i) => (
-        <TubeBox key={`raft-${i}`} size={[rlen, M, M]} position={[rcx, rcy, z]} rotation={[0, 0, rAngle]} material={steelMat} />
+        hidden(`leanRaft:${side}:${i}`) ? null :
+        <Ex key={`raft-${i}`} at={[rcx, rcy, z]} layer="frame" amount={exAmt} maxDim={exDim}>
+          <TubeBox size={[rlen, M, M]} position={[rcx, rcy, z]} rotation={[0, 0, rAngle]} material={steelMat} />
+        </Ex>
       ))}
 
       {/* Top chord / eave strut tying the rafters into the main building legs —
@@ -410,10 +467,15 @@ function SideLeanTo({
       {!continuous && <TubeBox size={[M, M, length]} position={[xInner - inDir * (M / 2), attachH - M / 2, 0]} material={steelMat} />}
 
       {/* Outer-wall hat-channel girts — only with vertical paneling (horizontal
-          sheeting screws straight to the posts). Seated on the column face. */}
-      {isVertical && walls?.outer !== 'open' && girtLevels(leanH, mainHeight, girtSpacing).map((y, i) => (
-        <WallHat key={`og${i}`} pos={[xOuter + inDir * GINSET, y, 0]} axis="x" out={-inDir} length={length} ext={GHD / 2} square={squareSecondary} />
-      ))}
+          sheeting screws screw straight to the posts). Seated on the column face. */}
+      {isVertical && walls?.outer !== 'open' && girtLevels(leanH, mainHeight, girtSpacing).map((y, i) => {
+        const gi = girtIx++
+        return hidden(`leanGirt:${side}:${gi}`) ? null : (
+          <Ex key={`og${i}`} at={[xOuter, y, 0]} layer="secondary" amount={exAmt} maxDim={exDim}>
+            <WallHat pos={[xOuter + inDir * GINSET, y, 0]} axis="x" out={-inDir} length={length} ext={GHD / 2} square={squareSecondary} />
+          </Ex>
+        )
+      })}
 
       {/* End-wall hat-channel girts (closed ends): horizontals + a raking girt */}
       {isVertical && ends.map((e) => {
@@ -422,23 +484,39 @@ function SideLeanTo({
         const tilt = Math.atan2(leanH - attachH, xOuter - xInner)
         return (
           <group key={`eg-${e.key}`}>
-            {girtLevels(leanH, mainHeight, girtSpacing).map((y, i) => (
-              <WallHat key={i} pos={[(xInner + xOuter) / 2, y, ez]} axis="z" out={eout} length={lw} ext={GHD / 2} square={squareSecondary} />
-            ))}
-            <WallHat
-              pos={[(xInner + xOuter) / 2, (attachH + leanH) / 2, ez]}
-              axis="z" out={eout} length={Math.hypot(xOuter - xInner, leanH - attachH)} tilt={tilt} square={squareSecondary}
-            />
+            {girtLevels(leanH, mainHeight, girtSpacing).map((y, i) => {
+              const gi = girtIx++
+              return hidden(`leanGirt:${side}:${gi}`) ? null : (
+                <Ex key={i} at={[(xInner + xOuter) / 2, y, ez]} layer="secondary" amount={exAmt} maxDim={exDim}>
+                  <WallHat pos={[(xInner + xOuter) / 2, y, ez]} axis="z" out={eout} length={lw} ext={GHD / 2} square={squareSecondary} />
+                </Ex>
+              )
+            })}
+            {(() => {
+              const gi = girtIx++
+              return hidden(`leanGirt:${side}:${gi}`) ? null : (
+                <Ex at={[(xInner + xOuter) / 2, (attachH + leanH) / 2, ez]} layer="secondary" amount={exAmt} maxDim={exDim}>
+                  <WallHat
+                    pos={[(xInner + xOuter) / 2, (attachH + leanH) / 2, ez]}
+                    axis="z" out={eout} length={Math.hypot(xOuter - xInner, leanH - attachH)} tilt={tilt} square={squareSecondary}
+                  />
+                </Ex>
+              )
+            })()}
           </group>
         )
       })}
 
       {/* Hat-channel purlins — seated on the rafters, crown to the panel (same
-          concept as the center build's roof hat channels) */}
-      {leanPurlinTs(rlen, lw).map((t, i) => {
+          concept as the center build's roof hat channels). purlinIx counts the
+          RENDERED rows (skipping the continuous top row) so leanPurlin:<side>:<pi>
+          matches the catalog enumeration. */}
+      {(() => { let purlinIx = 0; return leanPurlinTs(rlen, lw).map((t, i) => {
         // Continuous roof: the main building's eave purlin already covers the top
         // (attach) line — skip the lean-to's duplicate top purlin there.
         if (continuous && i === 0) return null
+        const pi = purlinIx++
+        if (hidden(`leanPurlin:${side}:${pi}`)) return null
         // Span the FULL rafter incl. the tail overhang so the outer purlin sits
         // flush with the top-chord EDGE. up-normal of the slope (points +Y).
         let nX = -(yTail - attachH), nY = xTail - xInner
@@ -446,24 +524,27 @@ function SideLeanTo({
         const nl = Math.hypot(nX, nY); nX /= nl; nY /= nl
         const sx = xInner + (xTail - xInner) * t
         const sy = attachH + (yTail - attachH) * t
-        // Seat the brim on the rafter TOP (rafter dropped `drop` below the skin).
-        const pur = Math.max(0.03, drop - M / 2 - GHD / 2)
+        // Seat the section so its OUTER face tucks just under the skin — set back
+        // half its depth (+ clearance). Section-aware (hat GHD vs square M) so a
+        // deep square-tube purlin no longer pokes through the roof panel.
+        const pur = purStandoff(squareSecondary)
         const cx = sx - nX * pur
         const cy = sy - nY * pur
         const phi = Math.atan2(-nX, nY)   // crown → up-normal
+        const o = exAmt > 0 ? pieceExplode([cx, cy, 0], 'secondary', exAmt, exDim) : ZERO3
         return (
-          <group key={i} position={[cx, cy, 0]} rotation={[0, 0, phi]}>
+          <group key={i} position={[cx + o[0], cy + o[1], o[2]]} rotation={[0, 0, phi]}>
             {/* Run 6″ past each gable end, flush with the roof-panel overhang. */}
             <LeanHat length={length + GABLE_OH * 2} square={squareSecondary} />
           </group>
         )
-      })}
+      }) })()}
 
       {/* Trim: only in normal view. The OUTER eave gets the drip trim. The INNER
           (attach-line) trim is SKIPPED on a continuous roof — there's no eave
           there, the main roof plane carries straight through, so a trim strip
           would poke through the roof at the connection point. */}
-      {!frameOnly && (
+      {!frameOnly && tvEave && (
         <>
           {!continuous && (
             <mesh position={[xInner, attachH + TR / 2, 0]} material={trimMat}>
@@ -476,22 +557,22 @@ function SideLeanTo({
           {useLEave
             ? <LTrimRun apex={[xTail, yTail, -(length / 2 + GABLE_OH)]} run={[0, 0, 1]} inboard={[-outSign, 0, 0]} up={[0, 1, 0]} length={length + GABLE_OH * 2} mat={trimMat} />
             : <BoxedEaveRun apex={[xTail, yTail, -(length / 2 + GABLE_OH)]} run={[0, 0, 1]} inboard={[-outSign, 0, 0]} up={[0, 1, 0]} length={length + GABLE_OH * 2} mat={trimMat} scale={LEAN_CAP} />}
-          {/* Raking caps over each closed end-wall's sloped top edge */}
-          {ends.map((e) => {
-            const dx = xTail - xInner, dyv = yTail - attachH
-            const ez = Math.sign(e.z)
-            const up = dx > 0 ? [-dyv, dx, 0] : [dyv, -dx, 0]
-            return useLEave
-              ? <LTrimRun key={`re-${e.key}`} apex={[xInner, attachH, e.z]} run={[dx, dyv, 0]} inboard={[0, 0, -ez]} up={up} length={Math.hypot(dx, dyv)} mat={trimMat} />
-              : <BoxedEaveRun key={`re-${e.key}`} apex={[xInner, attachH, e.z]} run={[dx, dyv, 0]} inboard={[0, 0, -ez]} up={up} length={Math.hypot(dx, dyv)} mat={trimMat} scale={LEAN_CAP} />
-          })}
         </>
       )}
+      {/* Raking caps over each closed end-wall's sloped top edge */}
+      {!frameOnly && tvRake && ends.map((e) => {
+        const dx = xTail - xInner, dyv = yTail - attachH
+        const ez = Math.sign(e.z)
+        const up = dx > 0 ? [-dyv, dx, 0] : [dyv, -dx, 0]
+        return useLEave
+          ? <LTrimRun key={`re-${e.key}`} apex={[xInner, attachH, e.z]} run={[dx, dyv, 0]} inboard={[0, 0, -ez]} up={up} length={Math.hypot(dx, dyv)} mat={trimMat} />
+          : <BoxedEaveRun key={`re-${e.key}`} apex={[xInner, attachH, e.z]} run={[dx, dyv, 0]} inboard={[0, 0, -ez]} up={up} length={Math.hypot(dx, dyv)} mat={trimMat} scale={LEAN_CAP} />
+      })}
 
       {/* Outer corner trim — per corner (outer wall + each end): both closed →
           wrap-around corner trim; one wall MISSING (open) → plain L-trim; both
           open → nothing. Floor → outer eave. */}
-      {!frameOnly && [{ key: 'front', sz: -1 }, { key: 'back', sz: 1 }].map(({ key, sz }) => {
+      {!frameOnly && tvCorner && [{ key: 'front', sz: -1 }, { key: 'back', sz: 1 }].map(({ key, sz }) => {
         const outerClosed = walls?.outer !== 'open'
         const endClosed   = isFullyClosed(walls?.[key])
         if (!outerClosed && !endClosed) return null
@@ -539,9 +620,13 @@ function SideLeanTo({
 function EndLeanTo({
   mainWidth, mainHeight, length, side,
   leanDepth, attachHeight, pitch, continuous = false, walls, roofColor, wallColor, trimColor, frameOnly, panelProfile,
-  isVertical = true, girtSpacing = 4, squareSecondary = false,
+  isVertical = true, girtSpacing = 4, frameSpacing = 5, squareSecondary = false,
   showSkylights = false, wainscotEnabled = false, wainscotColor, wainscotWalls,
+  trimVis = {},
+  hiddenInstances = {},
 }) {
+  const hidden = (id) => hiddenInstances?.[id] === true
+  const { amount: exAmt, maxDim: exDim } = useExplode()
   const hw  = mainWidth / 2
   const hl  = length / 2
   const attachH = continuous ? (attachHeight ?? mainHeight) : Math.min(attachHeight ?? mainHeight, mainHeight)
@@ -558,11 +643,13 @@ function EndLeanTo({
   const zTail   = zOuter + outSign * TRUSS_OH
   const yTail   = leanH + slopeM * (zTail - zOuter)
 
+  // Roof overhangs GABLE_OH past each rake (left/right) edge — same 6″ side
+  // overhang the SIDE lean-tos carry, so both wing types read identically.
   const roofGeo = useMemo(() => slopedPanelGeo(
-    -hw, attachH, zInner,
-     hw, attachH, zInner,
-     hw, yTail,   zTail,
-    -hw, yTail,   zTail,
+    -(hw + GABLE_OH), attachH, zInner,
+     (hw + GABLE_OH), attachH, zInner,
+     (hw + GABLE_OH), yTail,   zTail,
+    -(hw + GABLE_OH), yTail,   zTail,
   ), [hw, attachH, yTail, zInner, zTail])
 
   const { roofMat, trimMat, wallMat } = useMats(roofColor, wallColor, trimColor, mainWidth, leanH, panelProfile, isVertical)
@@ -605,9 +692,16 @@ function EndLeanTo({
   const rlen   = Math.hypot(rdz, rdy)
   const rAngle = Math.atan2(rdy, rdz)
   const rcz    = (zInner + zTail) / 2
-  const drop   = continuous ? 0.28 : RDROP   // continuous → match the main rafter line
+  // Continuous → match the main rafter line (width-aware LIFT); step-down →
+  // section-aware drop so a deep square-tube purlin still tucks under the skin.
+  const drop   = continuous ? roofLift(mainWidth) : rDrop(squareSecondary)
   const rcy    = (attachH + yTail) / 2 - drop // under the skin, with room for the purlin
-  const frames = useMemo(() => frameSpan(mainWidth), [mainWidth])
+  const frames = useMemo(() => frameSpan(mainWidth, frameSpacing), [mainWidth, frameSpacing])
+
+  // Trim visibility — synced to the main building's trim toggles.
+  const tvEave   = trimVis.eave   !== false
+  const tvRake   = trimVis.rake   !== false
+  const tvCorner = trimVis.corner !== false
 
   // Roof interior (underside) normal: perpendicular to the slope (Y-Z plane), forced downward.
   const roofN = (() => { let y = -rdz, z = rdy; if (y > 0) { y = -y; z = -z } const l = Math.hypot(y, z) || 1; return [0, y / l, z / l] })()
@@ -615,7 +709,7 @@ function EndLeanTo({
   // Knee braces at the OUTER eave columns (the wall furthest from the main
   // building): column → up the rafter, one per frame, tucked interior.
   const KB   = Math.min(2.25, leanDepth * 0.4, leanH * 0.4)   // brace leg length (ft)
-  const kz0  = zOuter + inDir * (M / 2 + GCLR)                // column center (set back behind panel)
+  const kz0  = zOuter + inDir * LEAN_POST_INSET               // column center (set back behind panel)
   const ky0  = leanH - KB                                     // down the column
   const kz1  = zOuter + inDir * KB                            // inboard along the slope
   const ky1  = leanH - drop + (attachH - leanH) * (KB / leanDepth)  // up the rafter, under skin
@@ -628,52 +722,71 @@ function EndLeanTo({
   // TOP of the post (same as the center building).
   const colTopY = attachH + slopeM * (kz0 - zInner) - drop - M / 2
 
+  let girtIx = 0
+
   return (
     <group>
-      {!frameOnly && <mesh geometry={roofGeo} material={roofMat} castShadow receiveShadow />}
-      {!frameOnly && <InteriorSkin colorHex={roofColor} geometry={roofGeo} n={roofN} />}
+      {!frameOnly && !hidden(`leanRoof:${side}`) && (
+        <Ex at={[0, (attachH + yTail) / 2, (zInner + zTail) / 2]} layer="skin" amount={exAmt} maxDim={exDim}>
+          <mesh geometry={roofGeo} material={roofMat} castShadow receiveShadow />
+          <InteriorSkin colorHex={roofColor} geometry={roofGeo} n={roofN} />
+        </Ex>
+      )}
 
       {/* Outer wall — only when closed */}
-      {!frameOnly && walls?.outer !== 'open' && (
-        <>
+      {!frameOnly && walls?.outer !== 'open' && !hidden(`leanWallOuter:${side}`) && (
+        <Ex at={[0, leanH / 2, zOuter]} layer="skin" amount={exAmt} maxDim={exDim}>
           <mesh position={[0, leanH / 2, zOuter]} rotation={[0, outerWallRotY, 0]} material={wallMat} castShadow receiveShadow>
             <planeGeometry args={[mainWidth, leanH]} />
           </mesh>
           <InteriorSkin colorHex={wallColor} planeArgs={[mainWidth, leanH]} position={[0, leanH / 2, zOuter]} rotation={[0, outerWallRotY, 0]} n={[0, 0, -outSign]} />
-        </>
+        </Ex>
       )}
 
       {/* End walls (left/right) — closed ends. No rake strip on the sloped top:
           it would sit on top of the roof panels at the gable (and breaks the clean
           line on a continuous roof). The roof simply overhangs the end. */}
       {!frameOnly && ends.map((e) => (
-        <group key={e.key}>
+        hidden(`leanWallSide:${side}:${e.key}`) ? null :
+        <Ex key={e.key} at={[e.x, leanH / 2, (zInner + zOuter) / 2]} layer="skin" amount={exAmt} maxDim={exDim}>
           <mesh geometry={endGeo(e.x)} material={endMat} castShadow receiveShadow />
           <InteriorSkin colorHex={wallColor} geometry={endGeo(e.x)} n={[-Math.sign(e.x), 0, 0]} />
-        </group>
+        </Ex>
       ))}
 
       {/* Outer eave columns — set back behind the panel; topped at the rafter
           underside so the rafter sits on top of the post. */}
-      <ColsX z={kz0} y={colTopY / 2} leanH={colTopY} width={mainWidth} />
+      <Ex at={[0, colTopY / 2, kz0]} layer="frame" amount={exAmt} maxDim={exDim}>
+        <ColsX z={kz0} y={colTopY / 2} leanH={colTopY} width={mainWidth} spacing={frameSpacing} hidden={(i) => hidden(`leanCol:${side}:${i}`)} />
+      </Ex>
 
       {/* Base rails — under the outer columns (runs the width) + along each
           closed end wall (attach line → outer column). */}
-      <TubeBox size={[mainWidth, M, M]} position={[0, M / 2, kz0]} material={steelMat} />
+      <Ex at={[0, M / 2, kz0]} layer="base" amount={exAmt} maxDim={exDim}>
+        <TubeBox size={[mainWidth, M, M]} position={[0, M / 2, kz0]} material={steelMat} />
+      </Ex>
       {ends.map((e) => (
-        <TubeBox key={`br-${e.key}`} size={[M, M, leanDepth]}
-          position={[e.x - Math.sign(e.x) * ECLR, M / 2, (zInner + zOuter) / 2]} material={steelMat} />
+        <Ex key={`br-${e.key}`} at={[e.x, M / 2, (zInner + zOuter) / 2]} layer="base" amount={exAmt} maxDim={exDim}>
+          <TubeBox size={[M, M, leanDepth]}
+            position={[e.x - Math.sign(e.x) * ECLR, M / 2, (zInner + zOuter) / 2]} material={steelMat} />
+        </Ex>
       ))}
 
       {/* Knee braces — outer eave column → rafter, one per frame */}
       {frames.map((x, i) => (
-        <TubeBox key={`knee-${i}`} size={[M, M, klen]} position={[x, kcy, kcz]} rotation={[-kang, 0, 0]} material={steelMat} />
+        hidden(`leanKnee:${side}:${i}`) ? null :
+        <Ex key={`knee-${i}`} at={[x, kcy, kcz]} layer="frame" amount={exAmt} maxDim={exDim}>
+          <TubeBox size={[M, M, klen]} position={[x, kcy, kcz]} rotation={[-kang, 0, 0]} material={steelMat} />
+        </Ex>
       ))}
 
       {/* Rafters / top chords — slope from the outer eave up INTO the main
           building's legs at the attach line, one per frame (rotated about X) */}
       {frames.map((x, i) => (
-        <TubeBox key={`raft-${i}`} size={[M, M, rlen]} position={[x, rcy, rcz]} rotation={[-rAngle, 0, 0]} material={steelMat} />
+        hidden(`leanRaft:${side}:${i}`) ? null :
+        <Ex key={`raft-${i}`} at={[x, rcy, rcz]} layer="frame" amount={exAmt} maxDim={exDim}>
+          <TubeBox size={[M, M, rlen]} position={[x, rcy, rcz]} rotation={[-rAngle, 0, 0]} material={steelMat} />
+        </Ex>
       ))}
 
       {/* Top chord / eave strut tying the rafters into the main building legs —
@@ -682,9 +795,14 @@ function EndLeanTo({
 
       {/* Outer-wall hat-channel girts — only with vertical paneling. Seated on
           the column face, length runs along X (the main width). */}
-      {isVertical && walls?.outer !== 'open' && girtLevels(leanH, mainHeight, girtSpacing).map((y, i) => (
-        <WallHat key={`og${i}`} pos={[0, y, zOuter + inDir * GINSET]} axis="z" out={-inDir} length={mainWidth} ext={GHD / 2} square={squareSecondary} />
-      ))}
+      {isVertical && walls?.outer !== 'open' && girtLevels(leanH, mainHeight, girtSpacing).map((y, i) => {
+        const gi = girtIx++
+        return hidden(`leanGirt:${side}:${gi}`) ? null : (
+          <Ex key={`og${i}`} at={[0, y, zOuter]} layer="secondary" amount={exAmt} maxDim={exDim}>
+            <WallHat pos={[0, y, zOuter + inDir * GINSET]} axis="z" out={-inDir} length={mainWidth} ext={GHD / 2} square={squareSecondary} />
+          </Ex>
+        )
+      })}
 
       {/* End-wall hat-channel girts (closed ends): horizontals + a raking girt */}
       {isVertical && ends.map((e) => {
@@ -693,23 +811,37 @@ function EndLeanTo({
         const tilt = Math.atan2(leanH - attachH, zOuter - zInner)
         return (
           <group key={`eg-${e.key}`}>
-            {girtLevels(leanH, mainHeight, girtSpacing).map((y, i) => (
-              <WallHat key={i} pos={[ex, y, (zInner + zOuter) / 2]} axis="x" out={eout} length={leanDepth} ext={GHD / 2} square={squareSecondary} />
-            ))}
-            <WallHat
-              pos={[ex, (attachH + leanH) / 2, (zInner + zOuter) / 2]}
-              axis="x" out={eout} length={Math.hypot(zOuter - zInner, leanH - attachH)} tilt={tilt} square={squareSecondary}
-            />
+            {girtLevels(leanH, mainHeight, girtSpacing).map((y, i) => {
+              const gi = girtIx++
+              return hidden(`leanGirt:${side}:${gi}`) ? null : (
+                <Ex key={i} at={[ex, y, (zInner + zOuter) / 2]} layer="secondary" amount={exAmt} maxDim={exDim}>
+                  <WallHat pos={[ex, y, (zInner + zOuter) / 2]} axis="x" out={eout} length={leanDepth} ext={GHD / 2} square={squareSecondary} />
+                </Ex>
+              )
+            })}
+            {(() => {
+              const gi = girtIx++
+              return hidden(`leanGirt:${side}:${gi}`) ? null : (
+                <Ex at={[ex, (attachH + leanH) / 2, (zInner + zOuter) / 2]} layer="secondary" amount={exAmt} maxDim={exDim}>
+                  <WallHat
+                    pos={[ex, (attachH + leanH) / 2, (zInner + zOuter) / 2]}
+                    axis="x" out={eout} length={Math.hypot(zOuter - zInner, leanH - attachH)} tilt={tilt} square={squareSecondary}
+                  />
+                </Ex>
+              )
+            })()}
           </group>
         )
       })}
 
       {/* Hat-channel purlins — seated on the rafters, crown to the panel (same
           concept as the center build's roof hat channels), length runs along X */}
-      {leanPurlinTs(rlen, leanDepth).map((t, i) => {
+      {(() => { let purlinIx = 0; return leanPurlinTs(rlen, leanDepth).map((t, i) => {
         // Continuous roof: skip the lean-to's duplicate top purlin (the main
         // building's eave purlin already covers the attach line).
         if (continuous && i === 0) return null
+        const pi = purlinIx++
+        if (hidden(`leanPurlin:${side}:${pi}`)) return null
         // Span the FULL rafter incl. the tail overhang so the outer purlin sits
         // flush with the top-chord EDGE. up-normal of the slope in the Y-Z plane.
         let nY = -(zTail - zInner), nZ = yTail - attachH
@@ -717,24 +849,28 @@ function EndLeanTo({
         const nl = Math.hypot(nY, nZ); nY /= nl; nZ /= nl
         const sz = zInner + (zTail - zInner) * t
         const sy = attachH + (yTail - attachH) * t
-        // Seat the brim on the rafter TOP (rafter dropped `drop` below the skin).
-        const pur = Math.max(0.03, drop - M / 2 - GHD / 2)
+        // Seat the section so its OUTER face tucks just under the skin — set back
+        // half its depth (+ clearance). Section-aware (hat GHD vs square M) so a
+        // deep square-tube purlin no longer pokes through the roof panel.
+        const pur = purStandoff(squareSecondary)
         const cy = sy - nY * pur
         const cz = sz - nZ * pur
         const psi = Math.atan2(nZ, nY)   // crown → up-normal
+        const o = exAmt > 0 ? pieceExplode([0, cy, cz], 'secondary', exAmt, exDim) : ZERO3
         return (
-          <group key={i} position={[0, cy, cz]} rotation={[psi, 0, 0]}>
+          <group key={i} position={[o[0], cy + o[1], cz + o[2]]} rotation={[psi, 0, 0]}>
             <group rotation={[0, Math.PI / 2, 0]}>
-              <LeanHat length={mainWidth} square={squareSecondary} />
+              {/* Run 6″ past each rake end, flush with the roof-panel overhang. */}
+              <LeanHat length={mainWidth + GABLE_OH * 2} square={squareSecondary} />
             </group>
           </group>
         )
-      })}
+      }) })()}
 
       {/* Trim: only in normal view. The OUTER eave gets the drip trim. The INNER
           (attach-line) trim is SKIPPED on a continuous roof — the main roof plane
           carries straight through, so a trim strip there would poke through it. */}
-      {!frameOnly && (
+      {!frameOnly && tvEave && (
         <>
           {!continuous && (
             <mesh position={[0, attachH + TR / 2, zInner]} material={trimMat}>
@@ -742,26 +878,27 @@ function EndLeanTo({
             </mesh>
           )}
           {/* Outer (side-wall) eave — with a wall present, a plain L-trim; otherwise
-              the boxed eave cap. */}
+              the boxed eave cap. Runs the FULL panel/purlin length (6″ past each
+              rake end, flush with the roof) — same as the side wings. */}
           {useLEave
-            ? <LTrimRun apex={[-mainWidth / 2, yTail, zTail]} run={[1, 0, 0]} inboard={[0, 0, -outSign]} up={[0, 1, 0]} length={mainWidth} mat={trimMat} />
-            : <BoxedEaveRun apex={[-mainWidth / 2, yTail, zTail]} run={[1, 0, 0]} inboard={[0, 0, -outSign]} up={[0, 1, 0]} length={mainWidth} mat={trimMat} scale={LEAN_CAP} />}
-          {/* Raking caps over each closed end-wall's sloped top edge */}
-          {ends.map((e) => {
-            const dz = zTail - zInner, dyv = yTail - attachH
-            const ex = Math.sign(e.x)
-            const up = dz > 0 ? [0, dz, -dyv] : [0, -dz, dyv]
-            return useLEave
-              ? <LTrimRun key={`re-${e.key}`} apex={[e.x, attachH, zInner]} run={[0, dyv, dz]} inboard={[-ex, 0, 0]} up={up} length={Math.hypot(dz, dyv)} mat={trimMat} />
-              : <BoxedEaveRun key={`re-${e.key}`} apex={[e.x, attachH, zInner]} run={[0, dyv, dz]} inboard={[-ex, 0, 0]} up={up} length={Math.hypot(dz, dyv)} mat={trimMat} scale={LEAN_CAP} />
-          })}
+            ? <LTrimRun apex={[-(hw + GABLE_OH), yTail, zTail]} run={[1, 0, 0]} inboard={[0, 0, -outSign]} up={[0, 1, 0]} length={mainWidth + GABLE_OH * 2} mat={trimMat} />
+            : <BoxedEaveRun apex={[-(hw + GABLE_OH), yTail, zTail]} run={[1, 0, 0]} inboard={[0, 0, -outSign]} up={[0, 1, 0]} length={mainWidth + GABLE_OH * 2} mat={trimMat} scale={LEAN_CAP} />}
         </>
       )}
+      {/* Raking caps over each closed end-wall's sloped top edge */}
+      {!frameOnly && tvRake && ends.map((e) => {
+        const dz = zTail - zInner, dyv = yTail - attachH
+        const ex = Math.sign(e.x)
+        const up = dz > 0 ? [0, dz, -dyv] : [0, -dz, dyv]
+        return useLEave
+          ? <LTrimRun key={`re-${e.key}`} apex={[e.x, attachH, zInner]} run={[0, dyv, dz]} inboard={[-ex, 0, 0]} up={up} length={Math.hypot(dz, dyv)} mat={trimMat} />
+          : <BoxedEaveRun key={`re-${e.key}`} apex={[e.x, attachH, zInner]} run={[0, dyv, dz]} inboard={[-ex, 0, 0]} up={up} length={Math.hypot(dz, dyv)} mat={trimMat} scale={LEAN_CAP} />
+      })}
 
       {/* Outer corner trim — per corner (outer wall + each end): both closed →
           wrap-around corner trim; one wall MISSING (open) → plain L-trim; both
           open → nothing. Floor → outer eave. */}
-      {!frameOnly && [{ key: 'left', sx: -1 }, { key: 'right', sx: 1 }].map(({ key, sx }) => {
+      {!frameOnly && tvCorner && [{ key: 'left', sx: -1 }, { key: 'right', sx: 1 }].map(({ key, sx }) => {
         const outerClosed = walls?.outer !== 'open'
         const endClosed   = isFullyClosed(walls?.[key])
         if (!outerClosed && !endClosed) return null
@@ -788,7 +925,7 @@ function EndLeanTo({
         <SkylightSurface
           surfaceKey={`roof:lean:${side}`}
           basis={flatBasis(
-            [-hw, yTail, zTail], [mainWidth, 0, 0],
+            [-(hw + GABLE_OH), yTail, zTail], [mainWidth + 2 * GABLE_OH, 0, 0],
             [0, attachH - yTail, zInner - zTail], [0, 1, 0],
           )}
         />
@@ -818,7 +955,13 @@ function EndLeanTo({
 export function LeanToCorner({
   corner, mainWidth, length, sideLean, endLean,
   roofColor, wallColor, trimColor, panelProfile = 'l5', frameOnly, isVertical = true,
+  trimVis = {}, hiddenInstances = {},
 }) {
+  // Granular hide + per-piece explode — same scheme as the wings, so the hip
+  // corner participates in the diagnostic view like every other lean-to piece.
+  const hidden = (id) => hiddenInstances?.[id] === true
+  const { amount: exAmt, maxDim: exDim } = useExplode()
+  const tvEave = trimVis.eave !== false
   const hw = mainWidth / 2, hl = length / 2
   const xs = corner.includes('left')  ? -1 : 1   // outboard sign in X (side wing)
   const zs = corner.includes('front') ? -1 : 1   // outboard sign in Z (end wing)
@@ -844,8 +987,13 @@ export function LeanToCorner({
   const B  = [xTail,   yTail,   zs * hl]
   const O  = [xTail,   yTail,   zTail]
   const D  = [xs * hw, yTail,   zTail]
+  // Hip UVs: ribs run UP-SLOPE toward the inner apex A (V=1), fanning out to the
+  // eaves (V=0) — so the seams read as a hip radiating from the building corner
+  // instead of the sheared diagonal a plain 0..1 quad UV produced. Corner order
+  // is A, B, O, D → [uA,vA, uB,vB, uO,vO, uD,vD].
+  const hipUV = [0.5, 1,  0, 0,  0.5, 0,  1, 0]
   const roofGeo = useMemo(
-    () => slopedPanelGeo(A[0], A[1], A[2], B[0], B[1], B[2], O[0], O[1], O[2], D[0], D[1], D[2]),
+    () => slopedPanelGeo(A[0], A[1], A[2], B[0], B[1], B[2], O[0], O[1], O[2], D[0], D[1], D[2], hipUV),
     [mainWidth, length, lwS, dpE, attachH, leanH, xs, zs]
   )
 
@@ -856,35 +1004,51 @@ export function LeanToCorner({
 
   return (
     <group>
-      {!frameOnly && <mesh geometry={roofGeo} material={roofMat} castShadow receiveShadow />}
-      {!frameOnly && <InteriorSkin colorHex={roofColor} geometry={roofGeo} n={[0, -1, 0]} />}
+      {!frameOnly && !hidden(`leanHipRoof:${corner}`) && (
+        <Ex at={[(xs * hw + xTail) / 2, (attachH + yTail) / 2, (zs * hl + zTail) / 2]} layer="skin" amount={exAmt} maxDim={exDim}>
+          <mesh geometry={roofGeo} material={roofMat} castShadow receiveShadow />
+          <InteriorSkin colorHex={roofColor} geometry={roofGeo} n={[0, -1, 0]} />
+        </Ex>
+      )}
 
       {/* Outer corner walls (the L) — only the faces whose wing outer wall is closed */}
-      {!frameOnly && sideLean.outerClosed && (
-        <>
+      {!frameOnly && sideLean.outerClosed && !hidden(`leanHipWall:${corner}:side`) && (
+        <Ex at={[xOut, leanH / 2, zs * (hl + dpE / 2)]} layer="skin" amount={exAmt} maxDim={exDim}>
           <mesh position={[xOut, leanH / 2, zs * (hl + dpE / 2)]} rotation={[0, xs < 0 ? -Math.PI / 2 : Math.PI / 2, 0]} material={wallMat} castShadow receiveShadow>
             <planeGeometry args={[dpE, leanH]} />
           </mesh>
           <InteriorSkin colorHex={wallColor} planeArgs={[dpE, leanH]} position={[xOut, leanH / 2, zs * (hl + dpE / 2)]} rotation={[0, xs < 0 ? -Math.PI / 2 : Math.PI / 2, 0]} n={[-xs, 0, 0]} />
-        </>
+        </Ex>
       )}
-      {!frameOnly && endLean.outerClosed && (
-        <>
+      {!frameOnly && endLean.outerClosed && !hidden(`leanHipWall:${corner}:end`) && (
+        <Ex at={[xs * (hw + lwS / 2), leanH / 2, zOut]} layer="skin" amount={exAmt} maxDim={exDim}>
           <mesh position={[xs * (hw + lwS / 2), leanH / 2, zOut]} rotation={[0, zs < 0 ? 0 : Math.PI, 0]} material={wallMat} castShadow receiveShadow>
             <planeGeometry args={[lwS, leanH]} />
           </mesh>
           <InteriorSkin colorHex={wallColor} planeArgs={[lwS, leanH]} position={[xs * (hw + lwS / 2), leanH / 2, zOut]} rotation={[0, zs < 0 ? 0 : Math.PI, 0]} n={[0, 0, -zs]} />
-        </>
+        </Ex>
       )}
 
       {/* Outer corner column + base rails along the two corner wall lines */}
-      <TubeBox size={[M, colTop, M]} position={[xOut - xs * (M / 2), colTop / 2, zOut - zs * (M / 2)]} material={steelMat} />
-      <TubeBox size={[M, M, dpE]} position={[xOut - xs * (M / 2), M / 2, zs * (hl + dpE / 2)]} material={steelMat} />
-      <TubeBox size={[lwS, M, M]} position={[xs * (hw + lwS / 2), M / 2, zOut - zs * (M / 2)]} material={steelMat} />
+      {!hidden(`leanHipCol:${corner}`) && (
+        <Ex at={[xOut - xs * (M / 2), colTop / 2, zOut - zs * (M / 2)]} layer="frame" amount={exAmt} maxDim={exDim}>
+          <TubeBox size={[M, colTop, M]} position={[xOut - xs * (M / 2), colTop / 2, zOut - zs * (M / 2)]} material={steelMat} />
+        </Ex>
+      )}
+      {!hidden(`leanHipRail:${corner}:0`) && (
+        <Ex at={[xOut - xs * (M / 2), M / 2, zs * (hl + dpE / 2)]} layer="base" amount={exAmt} maxDim={exDim}>
+          <TubeBox size={[M, M, dpE]} position={[xOut - xs * (M / 2), M / 2, zs * (hl + dpE / 2)]} material={steelMat} />
+        </Ex>
+      )}
+      {!hidden(`leanHipRail:${corner}:1`) && (
+        <Ex at={[xs * (hw + lwS / 2), M / 2, zOut - zs * (M / 2)]} layer="base" amount={exAmt} maxDim={exDim}>
+          <TubeBox size={[lwS, M, M]} position={[xs * (hw + lwS / 2), M / 2, zOut - zs * (M / 2)]} material={steelMat} />
+        </Ex>
+      )}
 
       {/* Eave caps over the two outer corner eaves — L-trim when either wing's outer
           wall is present, else the boxed eave cap. */}
-      {!frameOnly && (sideLean.outerClosed || endLean.outerClosed ? (
+      {!frameOnly && tvEave && (sideLean.outerClosed || endLean.outerClosed ? (
         <>
           <LTrimRun apex={[xTail, yTail, zs * hl]} run={[0, 0, zs]} inboard={[-xs, 0, 0]} up={[0, 1, 0]} length={dpE + TRUSS_OH} mat={trimMat} />
           <LTrimRun apex={[xs * hw, yTail, zTail]} run={[xs, 0, 0]} inboard={[0, 0, -zs]} up={[0, 1, 0]} length={lwS + TRUSS_OH} mat={trimMat} />
@@ -904,8 +1068,10 @@ export default function BuildingLeanTo({
   mainWidth, mainHeight, length,
   side, leanWidth, attachHeight, pitch, continuous = false, walls, frameOnly,
   roofColor, wallColor, trimColor, panelProfile = 'l5',
-  wallOrientation, roofStyle, girtSpacing = 4, squareSecondary = false,
+  wallOrientation, roofStyle, girtSpacing = 4, frameSpacing = 5, squareSecondary = false,
   showSkylights = false, wainscotEnabled = false, wainscotColor, wainscotWalls,
+  trimVis = {},
+  hiddenInstances = {},
 }) {
   const p = pitch ?? 2
   // Lean-tos are single-slope: their roof/wall paneling is ALWAYS vertical (panels
@@ -913,14 +1079,14 @@ export default function BuildingLeanTo({
   // exception is a CONTINUOUS lean-to, which extends the main roof PLANE; there it
   // must match the main building's orientation so the unbroken roofline has no seam.
   const isVertical = continuous ? (roofStyle === 'a_frame_vertical') : true
-  const extra = { showSkylights, wainscotEnabled, wainscotColor, wainscotWalls, squareSecondary }
+  const extra = { showSkylights, wainscotEnabled, wainscotColor, wainscotWalls, squareSecondary, trimVis, hiddenInstances }
   if (side === 'left' || side === 'right') {
     return (
       <SideLeanTo
         mainWidth={mainWidth} mainHeight={mainHeight} length={length} side={side}
         leanWidth={leanWidth} attachHeight={attachHeight} pitch={p} continuous={continuous} walls={walls} frameOnly={frameOnly}
         roofColor={roofColor} wallColor={wallColor} trimColor={trimColor} panelProfile={panelProfile}
-        isVertical={isVertical} girtSpacing={girtSpacing} {...extra}
+        isVertical={isVertical} girtSpacing={girtSpacing} frameSpacing={frameSpacing} {...extra}
       />
     )
   }
@@ -929,7 +1095,7 @@ export default function BuildingLeanTo({
       mainWidth={mainWidth} mainHeight={mainHeight} length={length} side={side}
       leanDepth={leanWidth} attachHeight={attachHeight} pitch={p} continuous={continuous} walls={walls} frameOnly={frameOnly}
       roofColor={roofColor} wallColor={wallColor} trimColor={trimColor} panelProfile={panelProfile}
-      isVertical={isVertical} girtSpacing={girtSpacing} {...extra}
+      isVertical={isVertical} girtSpacing={girtSpacing} frameSpacing={frameSpacing} {...extra}
     />
   )
 }
