@@ -68,8 +68,9 @@ function makeRegularRoofTex(arcLen, profile = 'l5') {
 // sheeting rides on purlins on TOP of the bows, so the whole shell sits a little
 // proud of the truss — this keeps the bow's top chord (a tube of radius M/2)
 // reading as INTERIOR framing instead of poking through the panels. Matches the
-// A-frame LIFT in BuildingRoof's root export.
-const REGULAR_LIFT = 0.28
+// A-frame LIFT in BuildingRoof's root export. (Exported for BuildingScrews so the
+// diagnostic screw markers land exactly on this shell.)
+export const REGULAR_LIFT = 0.28
 
 // Cross-section centreline of a regular roof skin (X-Y), left eave → ridge →
 // right eave. Passes through the SAME control points as RegularBow (so the skin
@@ -77,7 +78,7 @@ const REGULAR_LIFT = 0.28
 // instead of a flat horizontal overhang. `lift` raises the whole shell off the
 // bow centreline — the skin uses REGULAR_LIFT; the gable infill passes 0 so it
 // tucks UNDER the lifted skin (at the bow line).
-function regularRoofProfile(hw, height, ridgeHeight, lift = 0) {
+export function regularRoofProfile(hw, height, ridgeHeight, lift = 0) {
   const rise       = ridgeHeight - height
   const eaveXEnd   = hw * 0.82
   const eaveYEnd   = height + rise * 0.18

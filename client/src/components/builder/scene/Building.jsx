@@ -4,6 +4,7 @@ import SkylightSurface       from './Skylight'
 import BuildingColumns        from './BuildingColumns'
 import { RoofPurlins, WallGirts, StructuralFrames, DiagonalBraces, BaseRails, TubeWallContext, roofLift } from './BuildingTrusses'
 import BuildingHardware        from './BuildingHardware'
+import BuildingScrews          from './BuildingScrews'
 import TrimMesh               from './TrimMesh'
 import ExtendedGableCanopy    from './ExtendedGableCanopy'
 import BuildingLeanTo, { LeanToCorner } from './BuildingLeanTo'
@@ -169,6 +170,17 @@ export default function Building({ config }) {
           />
         </Exploded>
       )}
+
+      {/* ── Screw layer (DIAGNOSTIC VIEW only): hex-head markers on every fastening
+            line — panel→purlin/girt, purlin→rafter, girt→post, trim runs, brace
+            gusset plates, and all of it repeated on the lean-to wings. Instanced
+            (six draw calls total); each family explodes with its parent layer. ── */}
+      <BuildingScrews
+        width={width} length={length} height={height} ridgeHeight={ridgeHeight}
+        roofStyle={roofStyle} structure={structure} walls={walls} doors={doors}
+        wallOrientation={wallOrientation} vis={vis} frameOnly={frameOnly}
+        config={config}
+      />
 
       {/* ── Roof purlins: only A-Frame Vertical (vertical panels need purlins to ──
           ── screw into; horizontal & regular panels fasten straight to the bows) ── */}

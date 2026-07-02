@@ -97,9 +97,10 @@ const GEO = {
 // ── One InstancedMesh from a list of {pos,quat,scale} placements ────────────────
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3()
 // Per-piece explode is baked into each INSTANCE matrix (still one draw call): a
-// screw/bolt/bracket pops off its surface radially + lifts to the 'frame' layer.
+// screw/bolt/bracket pops off its surface radially + lifts to its `layer`.
 // amount 0 → offset [0,0,0], so assembled hardware is byte-identical to before.
-function Batch({ geometry, material, items, amount, maxDim, label }) {
+// Exported so BuildingScrews reuses the same batching for the panel/trim screws.
+export function Batch({ geometry, material, items, amount, maxDim, label, layer = 'frame' }) {
   const ref = useRef()
   const diagnostic = useBuilderStore((s) => s.diagnosticMode)
   const setField   = useBuilderStore((s) => s.setField)
@@ -109,7 +110,7 @@ function Batch({ geometry, material, items, amount, maxDim, label }) {
     const mesh = ref.current
     if (!mesh) return
     items.forEach((it, i) => {
-      const o = amount > 0 ? pieceExplode(it.pos, 'frame', amount, maxDim) : ZERO3
+      const o = amount > 0 ? pieceExplode(it.pos, layer, amount, maxDim) : ZERO3
       _p.set(it.pos[0] + o[0], it.pos[1] + o[1], it.pos[2] + o[2])
       _q.copy(it.quat ?? IDENTITY_Q)
       _s.set(it.scale?.[0] ?? 1, it.scale?.[1] ?? 1, it.scale?.[2] ?? 1)
@@ -119,7 +120,7 @@ function Batch({ geometry, material, items, amount, maxDim, label }) {
     mesh.count = items.length
     mesh.instanceMatrix.needsUpdate = true
     mesh.computeBoundingSphere()
-  }, [items, amount, maxDim])
+  }, [items, amount, maxDim, layer])
   if (!items.length) return null
   // In diagnostic mode the raycast reports the exact INSTANCE (instanceId); use it
   // to anchor a tooltip on that specific fastener/bracket + cross-highlight the
@@ -130,7 +131,7 @@ function Batch({ geometry, material, items, amount, maxDim, label }) {
     if (id == null) return
     const it = items[id]
     if (!it) return
-    const o = amount > 0 ? pieceExplode(it.pos, 'frame', amount, maxDim) : ZERO3
+    const o = amount > 0 ? pieceExplode(it.pos, layer, amount, maxDim) : ZERO3
     setHovered({ id, pos: [it.pos[0] + o[0], it.pos[1] + o[1], it.pos[2] + o[2]] })
     setField('hoveredPartId', 'structuralScrews')
   } : undefined
