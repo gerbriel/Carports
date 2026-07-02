@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Layers, Camera, RotateCcw, Ruler, Grid3x3, Tag, Car } from 'lucide-react'
+import { Layers, Camera, RotateCcw, Ruler, Grid3x3, Tag, Car, Share2, Check, Send, Save } from 'lucide-react'
 import { useBuilderStore } from '../../store/builderStore'
 
 function SunIcon() {
@@ -20,12 +21,73 @@ function MoonIcon() {
 }
 import { calculatePrice } from '../../data/pricing'
 import { BUILDING_TYPES } from '../../data/builderData'
-import { addDesign } from '../../data/adminData'
+import { addDesign, addLead, addQuote, updateDesign } from '../../data/adminData'
+import { activeBuilderOrg, encodeConfig, configSnapshot } from '../../data/builderLink'
 
 export default function BuilderToolbar() {
   const store       = useBuilderStore()
   const pricing     = calculatePrice(store)
   const isWireframe = store.viewMode === 'wireframe'
+
+  // Whose builder is this? An ?org= embed key (dealer's site) or a logged-in
+  // dealer makes this "dealer mode": leads are captured to that dealership.
+  const ctx = activeBuilderOrg()
+  const dealerMode = ctx.org?.kind === 'dealer'
+  const [sent, setSent] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  // Save (or re-save) the current 3D model so it can be reopened & edited later.
+  // A `?design=<id>` in the URL means we're editing an existing one → update it.
+  function saveDesign() {
+    const buildConfig = configSnapshot(store)
+    const payload = {
+      name: buildingLabel,
+      config: `${store.width}×${store.length}×${store.height}ft – ${buildingLabel}`,
+      price: pricing.subtotal, width: store.width, length: store.length, height: store.height,
+      roofStyle: store.roofStyle, buildConfig, orgId: ctx.org.id, salespersonId: ctx.salespersonId,
+    }
+    const params = new URLSearchParams(window.location.search)
+    const designId = params.get('design')
+    if (designId) {
+      updateDesign(designId, payload)
+    } else {
+      const rec = addDesign(payload)
+      params.set('design', rec.id)
+      window.history.replaceState(null, '', `${window.location.pathname}?${params.toString()}`)
+    }
+    setSaved(true); setTimeout(() => setSaved(false), 1800)
+  }
+
+  function shareLink() {
+    const enc = encodeConfig(store)
+    const base = ctx.embed
+      ? `${window.location.origin}/embed/builder?org=${ctx.org.embedKey}&d=${enc}`
+      : `${window.location.origin}/builder?d=${enc}`
+    try { navigator.clipboard?.writeText(base) } catch { /* ignore */ }
+    setCopied(true); setTimeout(() => setCopied(false), 1800)
+  }
+
+  function sendToManufacturer() {
+    const config = `${store.width}×${store.length}×${store.height}ft – ${buildingLabel}`
+    const buildConfig = configSnapshot(store)
+    const quote = {
+      orgId: ctx.org.id, salespersonId: ctx.salespersonId, assignee: ctx.salespersonId,
+      name: buildingLabel, config, price: pricing.subtotal, buildConfig,
+      width: store.width, length: store.length, height: store.height, roofStyle: store.roofStyle,
+      status: 'sent', source: 'builder',
+    }
+    // ?lead=<id> (from a lead's "Build a quote") adds another quote to that lead;
+    // otherwise start a new lead (customer) and its first quote.
+    const leadId = new URLSearchParams(window.location.search).get('lead')
+    if (leadId) {
+      addQuote({ leadId, ...quote })
+    } else {
+      const lead = addLead({ firstName: 'Builder', lastName: 'lead', structureType: buildingLabel, message: `Design started in the builder: ${config}`, orgId: ctx.org.id, salespersonId: ctx.salespersonId, source: 'builder' })
+      addQuote({ leadId: lead.id, ...quote })
+    }
+    setSent(true); setTimeout(() => setSent(false), 2600)
+  }
 
   const currentType = BUILDING_TYPES.find((t) => t.id === store.buildingType)
   const buildingLabel = store.roofStyle === 'free_standing_lean_to'
@@ -152,19 +214,46 @@ export default function BuilderToolbar() {
           </div>
           <div className="hidden sm:block text-[10px] text-slate-500">${pricing.deposit.toLocaleString()} deposit</div>
         </div>
-        <Link
-          to={`/contact?config=${encodeURIComponent(`${store.width}×${store.length}×${store.height}ft – ${buildingLabel}`)}&price=${pricing.subtotal}`}
-          onClick={() => addDesign({
-            name: buildingLabel,
-            config: `${store.width}×${store.length}×${store.height}ft – ${buildingLabel}`,
-            price: pricing.subtotal,
-            width: store.width, length: store.length, height: store.height,
-            roofStyle: buildingLabel,
-          })}
-          className="rounded-lg bg-brand px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-white hover:bg-brand-dark transition-colors whitespace-nowrap"
+        <button
+          onClick={saveDesign}
+          title="Save this 3D model so you can reopen and edit it later"
+          className="flex items-center gap-1.5 rounded-lg border border-white/15 px-2.5 py-2 text-xs font-medium text-slate-200 hover:bg-white/10 transition-colors whitespace-nowrap"
         >
-          <span className="sm:hidden">Quote</span><span className="hidden sm:inline">Get Formal Quote</span>
-        </Link>
+          {saved ? <Check size={14} className="text-emerald-400" /> : <Save size={14} />}
+          <span className="hidden sm:inline">{saved ? 'Saved' : 'Save'}</span>
+        </button>
+        <button
+          onClick={shareLink}
+          title="Copy a shareable link to this design"
+          className="flex items-center gap-1.5 rounded-lg border border-white/15 px-2.5 py-2 text-xs font-medium text-slate-200 hover:bg-white/10 transition-colors whitespace-nowrap"
+        >
+          {copied ? <Check size={14} className="text-emerald-400" /> : <Share2 size={14} />}
+          <span className="hidden sm:inline">{copied ? 'Link copied' : 'Share'}</span>
+        </button>
+
+        {dealerMode ? (
+          <button
+            onClick={sendToManufacturer}
+            className="flex items-center gap-1.5 rounded-lg bg-brand px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-white hover:bg-brand-dark transition-colors whitespace-nowrap"
+          >
+            {sent ? <><Check size={14} /> <span className="hidden sm:inline">Sent to Quality Metal</span><span className="sm:hidden">Sent</span></> : <><Send size={14} /> <span className="hidden sm:inline">Send to Quality Metal</span><span className="sm:hidden">Send</span></>}
+          </button>
+        ) : (
+          <Link
+            to={`/contact?config=${encodeURIComponent(`${store.width}×${store.length}×${store.height}ft – ${buildingLabel}`)}&price=${pricing.subtotal}`}
+            onClick={() => addDesign({
+              name: buildingLabel,
+              config: `${store.width}×${store.length}×${store.height}ft – ${buildingLabel}`,
+              price: pricing.subtotal,
+              width: store.width, length: store.length, height: store.height,
+              roofStyle: store.roofStyle,
+              buildConfig: configSnapshot(store),
+            })}
+            className="rounded-lg bg-brand px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-white hover:bg-brand-dark transition-colors whitespace-nowrap"
+          >
+            <span className="sm:hidden">Quote</span><span className="hidden sm:inline">Get Formal Quote</span>
+          </Link>
+        )}
       </div>
     </div>
   )

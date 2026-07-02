@@ -1,36 +1,62 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowLeft, SlidersHorizontal, X } from 'lucide-react'
 import BuilderCanvas from '../components/builder/BuilderCanvas'
 import BuilderPanel, { PartsSidebar, VehiclesSidebar } from '../components/builder/BuilderPanel'
 import BuilderToolbar from '../components/builder/BuilderToolbar'
 import { useBuilderStore } from '../store/builderStore'
+import { activeBuilderOrg, decodeConfig } from '../data/builderLink'
 
 export default function BuilderPage() {
   const isDark = useBuilderStore((s) => s.isDark)
   const [panelOpen, setPanelOpen] = useState(false)
+  // Whose builder this is (embed key in URL, or a logged-in dealer) → branding.
+  const { org, embed } = activeBuilderOrg()
+  const dealerBrand = org?.kind === 'dealer'
+
+  // Restore a shared design from a ?d= link on first mount.
+  useEffect(() => {
+    const d = new URLSearchParams(window.location.search).get('d')
+    if (!d) return
+    const cfg = decodeConfig(d)
+    if (cfg) useBuilderStore.setState(cfg)
+  }, [])
 
   return (
     <div className={`fixed inset-0 z-[200] flex flex-col bg-slate-950${isDark ? '' : ' light-theme'}`}>
       {/* Top bar */}
       <div className="flex items-center justify-between gap-2 px-3 sm:px-4 py-2.5 bg-slate-900 border-b border-white/8 shrink-0">
-        <Link
-          to="/"
-          className="flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-white transition-colors shrink-0"
-        >
-          <ArrowLeft size={15} /> <span className="hidden sm:inline">Back to site</span>
-        </Link>
+        {embed ? (
+          <span className="shrink-0" />
+        ) : (
+          <Link
+            to="/"
+            className="flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-white transition-colors shrink-0"
+          >
+            <ArrowLeft size={15} /> <span className="hidden sm:inline">Back to site</span>
+          </Link>
+        )}
 
         <div className="flex items-center gap-3 min-w-0">
-          <div className="h-6 w-6 rounded bg-brand flex items-center justify-center shrink-0">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
-              <polyline points="9 22 9 12 15 12 15 22"/>
-            </svg>
-          </div>
-          <span className="font-display text-base font-bold text-white tracking-wide hidden sm:block truncate">
-            3D Building Configurator
-          </span>
+          {dealerBrand && org.logoDataUrl ? (
+            <img src={org.logoDataUrl} alt={org.name} className="h-7 w-auto max-w-[140px] rounded bg-white object-contain shrink-0" />
+          ) : (
+            <div className="h-6 w-6 rounded bg-brand flex items-center justify-center shrink-0" style={dealerBrand ? { background: org.brandColor } : undefined}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                <polyline points="9 22 9 12 15 12 15 22"/>
+              </svg>
+            </div>
+          )}
+          {dealerBrand ? (
+            // Dealer logo is co-branding — always keep Quality Metal as the named manufacturer.
+            <div className="min-w-0 leading-tight">
+              <span className="block font-display text-sm sm:text-base font-bold text-white truncate">{org.name}</span>
+              <span className="block text-[10px] text-slate-400 truncate">Manufactured by Quality Metal Carports</span>
+            </div>
+          ) : (
+            <span className="font-display text-base font-bold text-white tracking-wide hidden sm:block truncate">3D Building Configurator</span>
+          )}
         </div>
 
         <div className="flex items-center gap-3 shrink-0">

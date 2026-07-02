@@ -11,6 +11,10 @@ import Home from './pages/Home'
 import ServicesPage from './pages/ServicesPage'
 import AboutPage from './pages/AboutPage'
 import ContactPage from './pages/ContactPage'
+import LoginPage from './pages/LoginPage'
+import StatusPortalPage from './pages/StatusPortalPage'
+import QuoteDocumentPage from './pages/QuoteDocumentPage'
+import PackingListPage from './pages/PackingListPage'
 import BlogListPage from './pages/BlogListPage'
 import BlogPostPage from './pages/BlogPostPage'
 import MetalCarportsPage from './pages/services/MetalCarportsPage'
@@ -68,6 +72,9 @@ function SiteLayout() {
           <Route path="/book" element={<Navigate to="/contact" replace />} />
           <Route path="/contact" element={<ContactPage />} />
 
+          {/* Customer order/quote status lookup */}
+          <Route path="/status" element={<StatusPortalPage />} />
+
           {/* Blog */}
           <Route path="/blog" element={<BlogListPage />} />
           <Route path="/blog/:slug" element={<BlogPostPage />} />
@@ -105,6 +112,29 @@ export default function App() {
               </Suspense>
             }
           />
+
+          {/* White-label embed of the builder for a dealer's own site (?org=KEY) */}
+          <Route
+            path="/embed/builder"
+            element={
+              <Suspense fallback={
+                <div className="fixed inset-0 z-[200] bg-slate-950 flex items-center justify-center">
+                  <div className="text-slate-400 text-sm">Loading builder…</div>
+                </div>
+              }>
+                <BuilderPage />
+              </Suspense>
+            }
+          />
+
+          {/* Printable quote / purchase agreement for a quote/order */}
+          <Route path="/quote/:quoteId" element={<QuoteDocumentPage />} />
+
+          {/* Printable packing list / bill of materials */}
+          <Route path="/packing/:quoteId" element={<PackingListPage />} />
+
+          {/* Portal sign-in (simulated) — full-screen */}
+          <Route path="/login" element={<LoginPage />} />
 
           {/* Admin demo dashboard — full-screen, no Navbar/Footer */}
           <Route

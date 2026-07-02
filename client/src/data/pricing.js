@@ -38,34 +38,118 @@ function nearestWidth(w) {
   return keys.reduce((p, c) => (Math.abs(c - w) < Math.abs(p - w) ? c : p))
 }
 
-export function calculatePrice(config) {
-  const { width, length, height, roofStyle, walls, doors } = config
+// ── Payment waterfall (matches the QMC purchase agreement) ────────────────────
+// Deposit = 18% of the pre-tax subtotal. "Stage Funding": for orders over
+// $15,000, half of the remaining balance is due at scheduling, and the rest is
+// the COD balance on install day. Tax rate varies by install address.
+export const DEPOSIT_RATE = 0.18
+export const SCHEDULING_FEE_RATE = 0.50
+export const STAGE_FUNDING_MIN = 15000
+export const DEFAULT_TAX_RATE = 0.0775
 
+// Display labels reused by the quote/contract document generator.
+export const ROOF_LABELS = {
+  regular: 'Regular Roof',
+  a_frame_horizontal: 'A-Frame Horizontal Roof',
+  a_frame_vertical: 'A-Frame Vertical Roof',
+  free_standing_lean_to: 'Lean-To Roof',
+}
+const ROOF_SHORT = {
+  regular: 'Regular', a_frame_horizontal: 'A-Frame Horizontal',
+  a_frame_vertical: 'A-Frame Vertical', free_standing_lean_to: 'Lean-To',
+}
+const WALL_STYLE_LABELS = { closed: 'Closed', gable: 'Closed', half_closed: '1 Panel', open: 'Open' }
+const SIDE_LABELS = { front: 'Front Wall', back: 'Back Wall', left: 'Left', right: 'Right' }
+const DOOR_TYPE_LABELS = { roll_up: 'Garage Door (Roll-Up)', walk_in: 'Walk-in Door', window: 'Window' }
+const ORIENTATION_LABELS = { horizontal: 'Horizontal', vertical: 'Vertical', auto: 'Horizontal' }
+
+const round2 = (n) => Math.round(n * 100) / 100
+const cap = (s = '') => s.charAt(0).toUpperCase() + s.slice(1)
+
+// Itemized quote: per-option line items (reusing the same rates as calculatePrice)
+// + tax + the deposit/scheduling-fee/balance waterfall. `unpricedOptions` flags
+// builder options that don't have a rate yet so a real number can be filled in.
+export function quoteBreakdown(config = {}, opts = {}) {
+  const { width = 12, length = 20, height = 10, roofStyle = 'a_frame_vertical', walls = {}, doors = [] } = config
+  const taxRate = opts.taxRate ?? DEFAULT_TAX_RATE
+  const additionalCharges = opts.additionalCharges ?? 0
+
+  const items = []
+  const unpriced = []
+  const push = (key, label, amount, qty = 1, note) =>
+    items.push({ key, label, qty, amount: amount == null ? null : round2(amount), priced: amount != null, note })
+
+  // 1. Roof base (sqft rate × area × roof-style multiplier)
   const sqftRate = BASE_SQFT[nearestWidth(width)] ?? 10
-  let total = sqftRate * width * length
-  total *= ROOF_MULTIPLIER[roofStyle] ?? 1.0
+  const roofMult = ROOF_MULTIPLIER[roofStyle] ?? 1.0
+  push('roof', `${width}X${length}' ${ROOF_SHORT[roofStyle] || 'Vertical'} Roof`, sqftRate * width * length * roofMult)
 
-  // Height adder above 8ft
-  if (height > 8) total += (height - 8) * 42 * length
+  // 2. Height (adder above 8ft; listed at $0 when standard)
+  push('height', `${height}' Height`, height > 8 ? (height - 8) * 42 * length : 0)
 
-  // Wall enclosures
+  // 3. Wind/snow rating (informational; certification is priced via Certified Plans)
+  const certified = config.certification && config.certification !== 'uncertified'
+  push('rating', `${config.windSpeed ?? 105} MPH + ${config.groundSnow ?? 30} PSF ${certified ? 'Certified' : 'Uncertified'}`, 0)
+
+  // 4. Roof pitch (informational)
+  push('pitch', `${config.roofPitch ?? 3}/12' Roof Pitch`, 0)
+
+  // 5. Walls (per side)
   const wallSqftRate = 3.25
-  for (const [side, style] of Object.entries(walls)) {
-    if (style === 'open') continue
+  const orient = ORIENTATION_LABELS[config.wallOrientation] || 'Horizontal'
+  for (const side of ['front', 'back', 'left', 'right']) {
+    const style = walls[side]
+    if (!style || style === 'open') { push(`wall_${side}`, `${SIDE_LABELS[side]} Open`, 0); continue }
     const dim = side === 'left' || side === 'right' ? length : width
     const factor = style === 'gable' ? 0.55 : style === 'half_closed' ? 0.5 : 1
-    total += factor * wallSqftRate * dim * height
+    push(`wall_${side}`, `${SIDE_LABELS[side]} ${WALL_STYLE_LABELS[style] || 'Closed'} ${orient}`, factor * wallSqftRate * dim * height)
   }
 
-  // Doors & windows
-  for (const door of doors) {
-    const priceMap = DOOR_PRICES[door.type] ?? {}
-    total += priceMap[door.sizeLabel] ?? 0
-    if (door.type === 'walk_in') total += WALK_IN_VARIANT_ADDER[door.variant] ?? 0
+  // 6. Doors & windows
+  doors.forEach((d, i) => {
+    const map = DOOR_PRICES[d.type] || {}
+    let amt = map[d.sizeLabel] ?? null
+    if (d.type === 'walk_in' && amt != null) amt += WALK_IN_VARIANT_ADDER[d.variant] ?? 0
+    const sizeTxt = (d.sizeLabel || '').replace('×', 'x')
+    const where = d.wall ? ` on ${cap(d.wall)} Wall` : ''
+    push(`door_${i}`, `${sizeTxt} ${DOOR_TYPE_LABELS[d.type] || 'Door'}${where}`.trim(), amt)
+    if (amt == null) unpriced.push(`${DOOR_TYPE_LABELS[d.type] || 'Door'} ${sizeTxt}`.trim())
+    if (d.framed) { push(`door_${i}_frame`, `${sizeTxt} Frameout${where}`.trim(), null); unpriced.push('Door/window frameout') }
+  })
+
+  // 7. Options the engine doesn't price yet → surfaced so a rate can be added
+  if (config.gauge === 12) unpriced.push('12-gauge frame upgrade')
+  if (config.panelGauge === 26) unpriced.push('26-gauge panel upgrade')
+  if (config.wainscotEnabled) unpriced.push('Wainscot')
+  if ((config.skylights || []).length) unpriced.push(`${config.skylights.length} skylight(s)`)
+  if (config.bracingType === 'diagonal') unpriced.push('Diagonal braces')
+  ;['left', 'right', 'front', 'back'].forEach((k) => { if (config.leanTos?.[k]?.enabled) unpriced.push(`${cap(k)} lean-to`) })
+
+  // Totals + the deposit / scheduling-fee / balance waterfall
+  const subtotal = round2(items.reduce((s, it) => s + (it.amount || 0), 0)) || 100
+  const tax = round2(subtotal * taxRate)
+  const total = round2(subtotal + tax + additionalCharges)
+  const deposit = round2(subtotal * DEPOSIT_RATE)
+  const remaining = round2(total - deposit)
+  const stageFunding = total > STAGE_FUNDING_MIN
+  const schedulingFee = stageFunding ? round2(remaining * SCHEDULING_FEE_RATE) : 0
+  const balanceDue = round2(total - deposit - schedulingFee)
+
+  return {
+    lineItems: items,
+    unpricedOptions: [...new Set(unpriced)],
+    subtotal, taxRate, tax, additionalCharges, total,
+    depositRate: DEPOSIT_RATE, deposit,
+    schedulingFeeRate: SCHEDULING_FEE_RATE, schedulingFee, stageFunding,
+    balanceDue,
   }
+}
 
-  const subtotal = Math.round(total / 100) * 100 || 100
-  const deposit = Math.round(subtotal * 0.1 / 50) * 50
-
+// Headline numbers for the builder toolbar (kept stable: subtotal to nearest $100,
+// deposit at the real 18% to nearest $50). Derives from the itemized breakdown.
+export function calculatePrice(config) {
+  const b = quoteBreakdown(config)
+  const subtotal = Math.round(b.subtotal / 100) * 100 || 100
+  const deposit = Math.round((subtotal * DEPOSIT_RATE) / 50) * 50
   return { subtotal, deposit }
 }

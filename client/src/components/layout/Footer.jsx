@@ -13,6 +13,7 @@ const COMPANY = [
   { label: 'About Us', to: '/about' },
   { label: 'Our Process', to: '/about#process' },
   { label: 'Services', to: '/services' },
+  { label: 'Track My Order', to: '/status' },
   { label: 'Contact', to: '/contact' },
 ]
 
